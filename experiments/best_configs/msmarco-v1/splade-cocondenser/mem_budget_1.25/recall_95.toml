@@ -8,7 +8,6 @@ k = 10
 n-runs = 1
 build = true
 metric = "RR@10"
-delete = true
 
 [folder]
 data = "~/knn_datasets/sparse_datasets/msmarco_v1_passage/cocondenser/data"
