@@ -1,4 +1,4 @@
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::Hash;
 
 use crate::QuantizedSummary;
@@ -70,6 +70,10 @@ pub(crate) struct PostingList<C: ComponentType> {
     packed_postings: Box<[PackedPostingBlock]>,
     block_offsets: Box<[usize]>,
     summaries: QuantizedSummary<C>,
+    #[serde(default)]
+    use_medoid_pruning: bool,
+    #[serde(default)]
+    medoid_postings: Box<[PackedPostingBlock]>,
 }
 
 impl<C: ComponentType + SpaceUsage> SpaceUsage for PostingList<C> {
@@ -77,6 +81,7 @@ impl<C: ComponentType + SpaceUsage> SpaceUsage for PostingList<C> {
         SpaceUsage::space_usage_bytes(&self.packed_postings)
             + SpaceUsage::space_usage_bytes(&self.block_offsets)
             + self.summaries.space_usage_bytes()
+            + SpaceUsage::space_usage_bytes(&self.medoid_postings)
     }
 }
 
@@ -102,6 +107,22 @@ impl<C: ComponentType> PostingList<C> {
     pub(crate) fn summaries(&self) -> &QuantizedSummary<C> {
         &self.summaries
     }
+
+    #[inline]
+    pub(crate) fn medoid_postings(&self) -> &[PackedPostingBlock] {
+        &self.medoid_postings
+    }
+
+    #[inline]
+    pub(crate) fn medoid_postings_mut(&mut self) -> &mut [PackedPostingBlock] {
+        &mut self.medoid_postings
+    }
+
+    #[inline]
+    pub(crate) fn is_medoid_index(&self) -> bool {
+        self.use_medoid_pruning
+    }
+
     pub(crate) fn get_all_doc_ranges(&self) -> Vec<std::ops::Range<usize>> {
         let mut ranges = Vec::with_capacity(self.packed_postings().len());
         for pack in self.packed_postings().iter() {
@@ -124,6 +145,10 @@ impl<C: ComponentType> PostingList<C> {
     ) where
         S: SeismicSearchDataset,
     {
+        if self.use_medoid_pruning {
+            return self.search_with_medoid(evaluator, k, heap_factor, heap, visited, forward_index);
+        }
+
         let dots = self.summaries().distances(query);
 
         for (block_id, dot) in dots.into_iter().enumerate() {
@@ -158,6 +183,10 @@ impl<C: ComponentType> PostingList<C> {
     ) where
         S: SeismicSearchDataset,
     {
+        if self.use_medoid_pruning {
+            return self.search_with_medoid(evaluator, k, heap_factor, heap, visited, forward_index);
+        }
+
         let dots = self.summaries().distances(query);
         let dots: Vec<_> = dots
             .into_iter()
@@ -211,6 +240,56 @@ impl<C: ComponentType> PostingList<C> {
                 let distance = evaluator.compute_distance(vector);
                 heap.push(ScoredRange { distance, range });
             }
+        }
+    }
+
+    fn search_with_medoid<'e, S>(
+        &self,
+        evaluator: &mut <EncoderFor<S> as VectorEncoder>::Evaluator<'e>,
+        k: usize,
+        heap_factor: f32,
+        heap: &mut KHeap<ScoredRange<DotProduct>>,
+        visited: &mut FxHashSet<usize>,
+        forward_index: &'e S,
+    ) where
+        S: SeismicSearchDataset,
+    {
+        let n_blocks = self.medoid_postings.len();
+        if n_blocks == 0 {
+            return;
+        }
+
+        // Batched prefetch + compute medoid distances (B=8).
+        let distances: Vec<DotProduct> = {
+            const BATCH: usize = 8;
+            let mut dists = Vec::with_capacity(n_blocks);
+            let mut batch_start = 0;
+            while batch_start < n_blocks {
+                let batch_end = (batch_start + BATCH).min(n_blocks);
+                for i in batch_start..batch_end {
+                    forward_index.prefetch_with_range(self.medoid_postings[i].unpack());
+                }
+                for i in batch_start..batch_end {
+                    let medoid_range = self.medoid_postings[i].unpack();
+                    dists.push(evaluator.compute_distance(forward_index.get_with_range(medoid_range)));
+                }
+                batch_start = batch_end;
+            }
+            dists
+        };
+
+        // Scan: prune by medoid score, then evaluate non-medoid docs.
+        for (block_id, medoid_dist) in distances.into_iter().enumerate() {
+            if heap.len() == k && medoid_dist.distance() < heap_factor * heap.peek().distance.distance() {
+                continue;
+            }
+            let medoid_range = self.medoid_postings[block_id].unpack();
+            if visited.insert(medoid_range.start) {
+                heap.push(ScoredRange { distance: medoid_dist, range: medoid_range });
+            }
+            let packed_posting_block =
+                &self.packed_postings()[self.block_offsets[block_id]..self.block_offsets[block_id + 1]];
+            self.evaluate_posting_block(evaluator, packed_posting_block, heap, visited, forward_index);
         }
     }
 
@@ -372,6 +451,63 @@ impl<C> PostingList<C>
 where
     C: ComponentType + std::hash::Hash,
 {
+    /// Find the medoid of a block: the document with the highest dot product with
+    /// the block centroid (average vector).
+    fn find_medoid<S>(dataset: &S, block: &[usize]) -> usize
+    where
+        S: SeismicBuildDataset,
+    {
+        if block.is_empty() {
+            return 0;
+        }
+        if block.len() == 1 {
+            return block[0];
+        }
+
+        let mut centroid: FxHashMap<ComponentFor<S>, f32> = FxHashMap::default();
+        for &doc_id in block.iter() {
+            let posting = dataset.get(doc_id as u64);
+            for (&c, &v) in posting.components().iter().zip(posting.values()) {
+                *centroid.entry(c).or_insert(0.0) += v.to_f32().unwrap();
+            }
+        }
+        let block_size = block.len() as f32;
+        for val in centroid.values_mut() {
+            *val /= block_size;
+        }
+
+        let mut best_doc = block[0];
+        let mut best_dot = 0.0f32;
+        for &doc_id in block.iter() {
+            let posting = dataset.get(doc_id as u64);
+            let dot: f32 = posting
+                .components()
+                .iter()
+                .zip(posting.values())
+                .filter_map(|(&c, &v)| centroid.get(&c).map(|&cv| v.to_f32().unwrap() * cv))
+                .sum();
+            if dot > best_dot {
+                best_dot = dot;
+                best_doc = doc_id;
+            }
+        }
+        best_doc
+    }
+
+    /// Reorder a block in-place so its medoid is at position 0.
+    fn reorder_with_medoid_first<S>(dataset: &S, block: &mut [usize])
+    where
+        S: SeismicBuildDataset,
+    {
+        if block.len() <= 1 {
+            return;
+        }
+        let medoid_doc = Self::find_medoid(dataset, block);
+        if let Some(pos) = block.iter().position(|&x| x == medoid_doc) {
+            block.swap(0, pos);
+        }
+    }
+
     pub(crate) fn build<S>(
         dataset: &S,
         postings: &[(ValueFor<S>, usize)],
@@ -401,6 +537,49 @@ where
             ),
         };
 
+        if matches!(config.summarization, SummarizationStrategy::Medoid) {
+            // Reorder each block so the medoid is first.
+            for &[block_start, block_end] in block_offsets.array_windows() {
+                Self::reorder_with_medoid_first(dataset, &mut posting_list[block_start..block_end]);
+            }
+
+            let n_blocks = block_offsets.len().saturating_sub(1);
+            let mut medoid_postings = Vec::with_capacity(n_blocks);
+
+            // packed_postings: non-medoid docs only; block_offsets re-computed accordingly.
+            let mut new_block_offsets = Vec::with_capacity(n_blocks + 1);
+            new_block_offsets.push(0usize);
+            let mut packed_postings =
+                Vec::with_capacity(posting_list.len().saturating_sub(n_blocks));
+
+            for i in 0..n_blocks {
+                let block_start = block_offsets[i];
+                let block_end = block_offsets[i + 1];
+                let medoid_id = posting_list[block_start];
+                medoid_postings
+                    .push(PackedPostingBlock::pack(dataset.range_from_id(medoid_id as u64)));
+                for &doc_id in &posting_list[block_start + 1..block_end] {
+                    packed_postings
+                        .push(PackedPostingBlock::pack(dataset.range_from_id(doc_id as u64)));
+                }
+                new_block_offsets.push(packed_postings.len());
+            }
+
+            let quantizer = vectorium::PlainSparseQuantizer::<C, f32, vectorium::DotProduct>::new(
+                dataset.input_dim(),
+                dataset.input_dim(),
+            );
+            let empty_summary = SparseDatasetGrowable::new(quantizer);
+
+            return Self {
+                packed_postings: packed_postings.into_boxed_slice(),
+                block_offsets: new_block_offsets.into_boxed_slice(),
+                summaries: QuantizedSummary::from(SparseDataset::from(empty_summary)),
+                use_medoid_pruning: true,
+                medoid_postings: medoid_postings.into_boxed_slice(),
+            };
+        }
+
         let quantizer = vectorium::PlainSparseQuantizer::<C, f32, vectorium::DotProduct>::new(
             dataset.input_dim(),
             dataset.input_dim(),
@@ -426,6 +605,8 @@ where
                             &posting_list[block_start..block_end],
                             fraction,
                         ),
+
+                        SummarizationStrategy::Medoid => unreachable!(),
                     };
                     let (components, values): (Vec<C>, Vec<f32>) = summary_vec.into_iter().unzip();
                     (components, values)
@@ -446,6 +627,8 @@ where
             packed_postings: packed_postings.into_boxed_slice(),
             block_offsets: block_offsets.into_boxed_slice(),
             summaries: QuantizedSummary::from(SparseDataset::from(summary)),
+            use_medoid_pruning: false,
+            medoid_postings: Box::default(),
         }
     }
 }

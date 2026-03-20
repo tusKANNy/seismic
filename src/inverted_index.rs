@@ -109,18 +109,21 @@ where
         let forward = SpaceUsage::space_usage_bytes(&self.forward_index);
         println!("\tForward Index: {:} Bytes", forward);
 
-        // Breakdown dettagliato delle posting lists
         let mut total_packed_postings = 0;
         let mut total_block_offsets = 0;
         let mut total_summaries = 0;
+        let mut total_medoid_postings = 0;
 
         for posting_list in self.posting_lists.iter() {
             total_packed_postings += SpaceUsage::space_usage_bytes(posting_list.packed_postings());
             total_block_offsets += SpaceUsage::space_usage_bytes(posting_list.block_offsets());
             total_summaries += posting_list.summaries().space_usage_bytes();
+            total_medoid_postings +=
+                posting_list.medoid_postings().len() * std::mem::size_of::<u64>();
         }
 
-        let postings_total = total_packed_postings + total_block_offsets + total_summaries;
+        let postings_total =
+            total_packed_postings + total_block_offsets + total_summaries + total_medoid_postings;
 
         println!("\tPosting Lists: {:} Bytes", postings_total);
         println!(
@@ -134,9 +137,14 @@ where
             total_block_offsets as f64 / postings_total as f64 * 100.0
         );
         println!(
-            "\t  └─ summaries: {:} Bytes ({:.2}%)",
+            "\t  ├─ summaries: {:} Bytes ({:.2}%)",
             total_summaries,
             total_summaries as f64 / postings_total as f64 * 100.0
+        );
+        println!(
+            "\t  └─ medoid_postings: {:} Bytes ({:.2}%)",
+            total_medoid_postings,
+            total_medoid_postings as f64 / postings_total as f64 * 100.0
         );
 
         let knn_size = match &self.knn {
@@ -262,6 +270,9 @@ where
 
         for posting in posting_lists.iter_mut() {
             for pack in posting.packed_postings_mut().iter_mut() {
+                *pack = packs_map[pack];
+            }
+            for pack in posting.medoid_postings_mut().iter_mut() {
                 *pack = packs_map[pack];
             }
         }

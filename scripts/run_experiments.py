@@ -161,7 +161,6 @@ def build_base_index(configs, experiment_dir, build_command):
         f"--input-file {input_file}",
         f"--output-file {output_file}",
         f"--n-postings {configs['indexing_parameters']['n-postings']}",
-        f"--summary-energy {configs['indexing_parameters']['summary-energy']}",
         f"--centroid-fraction {configs['indexing_parameters']['centroid-fraction']}",
         f"--knn {configs['indexing_parameters']['knn']}",
         f"--clustering-algorithm {configs['indexing_parameters']['clustering-algorithm']}",
@@ -171,6 +170,9 @@ def build_base_index(configs, experiment_dir, build_command):
         knn_path = os.path.join(configs['folder']['data'], configs['filename']['knn_path'])
         knn_path_arg = f"--knn-path {knn_path}"
         command_and_params.append(knn_path_arg)
+
+    if configs['indexing_parameters'].get('summary-energy', None):
+        command_and_params.append(f"--summary-energy {configs['indexing_parameters']['summary-energy']}")
 
     if configs['indexing_parameters'].get('kmeans-pruning-factor', None):
         kmeans_pruning_factor = configs['indexing_parameters']['kmeans-pruning-factor']
@@ -205,6 +207,10 @@ def build_base_index(configs, experiment_dir, build_command):
 
     pruning_strategy = configs['indexing_parameters'].get("pruning-strategy", "global-threshold")
     command_and_params.append(f"--pruning-strategy {pruning_strategy}")
+
+    if configs['indexing_parameters'].get("summarization-strategy", None):
+        summarization_strategy = configs['indexing_parameters']["summarization-strategy"]
+        command_and_params.append(f"--summarization-strategy {summarization_strategy}")
 
     command = ' '.join(command_and_params)
 

@@ -44,6 +44,16 @@ enum ClusteringAlgorithmClap {
     RandomKmeansInvertedIndexApprox,
 }
 
+// clap does not support enums with associated values; keep CLI-only types in the bin.
+#[derive(clap::ValueEnum, Default, Debug, Clone)]
+#[clap(rename_all = "kebab-case")]
+enum SummarizationStrategyClap {
+    #[default]
+    EnergyPreserving,
+    Medoid,
+    FixedSize,
+}
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
@@ -70,10 +80,19 @@ pub struct Args {
     #[arg(default_value_t = 0.1)]
     centroid_fraction: f32,
 
+    /// Summarization strategy: energy-preserving (default), medoid, or fixed-size.
+    #[clap(long, value_parser, default_value = "energy-preserving")]
+    summarization_strategy: SummarizationStrategyClap,
+
     /// Summary energy fraction preserved; see docs/RustUsage.md#using-the-rust-code (Executing Queries section).
     #[clap(short, long, value_parser)]
     #[arg(default_value_t = 0.5)]
     summary_energy: f32,
+
+    /// Number of summary components for fixed-size summarization.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 0)]
+    n_components: usize,
 
     /// Selects the clustering algorithm used to cluster postings in each posting list; see docs/RustUsage.md#using-the-rust-code.
     #[clap(long, value_parser)]
@@ -160,6 +179,16 @@ fn build_config(args: &Args) -> Configuration {
         },
     };
 
+    let summarization = match args.summarization_strategy {
+        SummarizationStrategyClap::EnergyPreserving => SummarizationStrategy::EnergyPreserving {
+            summary_energy: args.summary_energy,
+        },
+        SummarizationStrategyClap::Medoid => SummarizationStrategy::Medoid,
+        SummarizationStrategyClap::FixedSize => SummarizationStrategy::FixedSize {
+            n_components: args.n_components,
+        },
+    };
+
     Configuration::default()
         .pruning_strategy(pruning)
         .blocking_strategy(BlockingStrategy::RandomKmeans {
@@ -167,9 +196,7 @@ fn build_config(args: &Args) -> Configuration {
             min_cluster_size: args.min_cluster_size,
             clustering_algorithm: clustering,
         })
-        .summarization_strategy(SummarizationStrategy::EnergyPreserving {
-            summary_energy: args.summary_energy,
-        })
+        .summarization_strategy(summarization)
         .knn(knn_config)
 }
 
