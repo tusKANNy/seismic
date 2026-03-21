@@ -118,10 +118,6 @@ impl<C: ComponentType> PostingList<C> {
         &mut self.medoid_postings
     }
 
-    #[inline]
-    pub(crate) fn is_medoid_index(&self) -> bool {
-        self.use_medoid_pruning
-    }
 
     pub(crate) fn get_all_doc_ranges(&self) -> Vec<std::ops::Range<usize>> {
         let mut ranges = Vec::with_capacity(self.packed_postings().len());
