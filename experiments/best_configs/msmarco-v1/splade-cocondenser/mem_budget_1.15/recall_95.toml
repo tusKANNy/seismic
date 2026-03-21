@@ -1,4 +1,4 @@
-name = "_recall_95"
+name = "splade-cocondenser-mem_budget_1.15-recall_95"
 title = "Seismic  - Recall 95%"
 description = "Optimized configuration for  targeting recall 95% from grid search"
 dataset = " on MS-MARCO"
