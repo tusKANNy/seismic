@@ -117,7 +117,7 @@ where
         for posting_list in self.posting_lists.iter() {
             total_packed_postings += SpaceUsage::space_usage_bytes(posting_list.packed_postings());
             total_block_offsets += SpaceUsage::space_usage_bytes(posting_list.block_offsets());
-            total_summaries += posting_list.summaries().space_usage_bytes();
+            total_summaries += posting_list.summaries_space_bytes();
             total_medoid_postings +=
                 posting_list.medoid_postings().len() * std::mem::size_of::<u64>();
         }

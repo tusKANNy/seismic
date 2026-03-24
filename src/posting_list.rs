@@ -69,7 +69,7 @@ impl SpaceUsage for PackedPostingBlock {
 pub(crate) struct PostingList<C: ComponentType> {
     packed_postings: Box<[PackedPostingBlock]>,
     block_offsets: Box<[usize]>,
-    summaries: QuantizedSummary<C>,
+    summaries: Option<QuantizedSummary<C>>,
     #[serde(default)]
     use_medoid_pruning: bool,
     #[serde(default)]
@@ -80,7 +80,7 @@ impl<C: ComponentType + SpaceUsage> SpaceUsage for PostingList<C> {
     fn space_usage_bytes(&self) -> usize {
         SpaceUsage::space_usage_bytes(&self.packed_postings)
             + SpaceUsage::space_usage_bytes(&self.block_offsets)
-            + self.summaries.space_usage_bytes()
+            + self.summaries.as_ref().map_or(0, |s| s.space_usage_bytes())
             + SpaceUsage::space_usage_bytes(&self.medoid_postings)
     }
 }
@@ -105,7 +105,15 @@ impl<C: ComponentType> PostingList<C> {
 
     #[inline]
     pub(crate) fn summaries(&self) -> &QuantizedSummary<C> {
-        &self.summaries
+        self.summaries.as_ref().expect("summaries not available for medoid index")
+    }
+
+    #[inline]
+    pub(crate) fn summaries_space_bytes(&self) -> usize
+    where
+        C: SpaceUsage,
+    {
+        self.summaries.as_ref().map_or(0, |s| s.space_usage_bytes())
     }
 
     #[inline]
@@ -561,16 +569,10 @@ where
                 new_block_offsets.push(packed_postings.len());
             }
 
-            let quantizer = vectorium::PlainSparseQuantizer::<C, f32, vectorium::DotProduct>::new(
-                dataset.input_dim(),
-                dataset.input_dim(),
-            );
-            let empty_summary = SparseDatasetGrowable::new(quantizer);
-
             return Self {
                 packed_postings: packed_postings.into_boxed_slice(),
                 block_offsets: new_block_offsets.into_boxed_slice(),
-                summaries: QuantizedSummary::from(SparseDataset::from(empty_summary)),
+                summaries: None,
                 use_medoid_pruning: true,
                 medoid_postings: medoid_postings.into_boxed_slice(),
             };
@@ -622,7 +624,7 @@ where
         Self {
             packed_postings: packed_postings.into_boxed_slice(),
             block_offsets: block_offsets.into_boxed_slice(),
-            summaries: QuantizedSummary::from(SparseDataset::from(summary)),
+            summaries: Some(QuantizedSummary::from(SparseDataset::from(summary))),
             use_medoid_pruning: false,
             medoid_postings: Box::default(),
         }
