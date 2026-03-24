@@ -19,7 +19,7 @@ delete =        true
 data =          "~/knn_datasets/sparse_datasets/msmarco_v1_passage/cocondenser/data"
 index =         "~/knn_indexes/sparse_datasets/msmarco_v1_passage/cocondenser/indexes"
 qrels_path =    "~/knn_datasets/sparse_datasets/msmarco_v1_passage/qrels.dev.small.tsv"
-experiment =    "./grid_medoid_residual"     # stdout and stderr here of running the experiment is saved here. in a specific subfolder for the current execution
+experiment =    "./grid_medoid"     # stdout and stderr here of running the experiment is saved here. in a specific subfolder for the current execution
 
 [filename]
 dataset =       "documents.bin"
@@ -32,21 +32,16 @@ index =         "seismic_index"
 [indexing_parameters]
 n-postings =            [2000, 3000, 4000]
 centroid-fraction =     [0.05, 0.1, 0.2]
-summarization-strategy = ["medoid-residual"] # Possible options are "medoid", "medoid-residual", "centroid"
-summary-energy =        [0.4]
-knn =                   [0]
-pruning-strategy =      ["global-threshold"] # Possible options are "coi-threshold", "global-threshold", "fixed-size". Default is "global-threshold"
-#alpha =                 [0.1, 0.15, 0.2] # needed only by coi-threshold
-max-fraction =          [2.0, 3.0, 4.0, 6.0] # needed only by "global-threshold"
-clustering-algorithm =  ["random-kmeans-inverted-index-approx"] # Possible options are "random-kmeans", "random-kmeans-inverted-index", "random-kmeans-inverted-index-approx"
-kmeans-doc-cut =        [15]    # needed by "random-kmeans-inverted-index" and "random-kmeans-inverted-index-approx"
-# kmeans-pruning-factor = 0.005 # Only used by random-kmeans-inverted-index
-value-type =            ["dotvbyte"]
+summarization-strategy = ["medoid"] # FIX
+knn =                   [0] # FIX
+pruning-strategy =      ["global-threshold"] # FIX
+max-fraction =          [2.0, 3.0, 4.0, 6.0] 
+clustering-algorithm =  ["random-kmeans-inverted-index-approx"] # FIX
+kmeans-doc-cut =        [15]   # FIX
+value-type =            ["dotvbyte"] # FIX
 min-cluster-size =      [10] 
-
 
 [querying_parameters]
 query-cut =             [2, 4, 6, 7, 8, 10, 12]
 heap-factor =           [0.4, 0.5, 0.55, 0.6, 0.7, 0.75, 0.8]
-knn =                   [0]
-first-sorted =          [false]
+knn =                   [0] # FIX
