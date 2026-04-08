@@ -37,7 +37,7 @@ num-traits = "0.2"
 pyo3 = { version = "0.26", features = ["extension-module"], optional = true }
 numpy = { version = "0.26", optional = true }
 indicatif = { version = "0.18", features = ["rayon"] }
-vectorium = { git = "https://github.com/TusKANNy/vectorium.git" }
+vectorium = { git = "https://github.com/TusKANNy/vectorium_private.git", branch = "feature/quantization" }
 serde_json = "1.0"
 flate2 = "1.1"
 tar = "0.4"

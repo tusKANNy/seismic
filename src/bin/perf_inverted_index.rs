@@ -12,6 +12,7 @@ use seismic::index_traits::{ComponentFor, EncoderFor};
 use vectorium::IndexSerializer;
 
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
+use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::{
     ComponentType, Dataset, Distance, DotProduct, PackedSparseDataset, SpaceUsage,
     SparseVectorView, VectorEncoder, read_seismic_format,
@@ -245,6 +246,16 @@ pub fn main() {
         }
 
         run_performance_test_generic::<PackedSparseDataset<DotVByteFixedU8Encoder>>(args);
+        return;
+    }
+
+    if args.value_type() == "dotvbyte-scalar" {
+        if args.component_type() != "u16" {
+            eprintln!("Error: dotvbyte-scalar is only supported with component-type 'u16'.");
+            std::process::exit(1);
+        }
+
+        run_performance_test_generic::<PackedSparseDataset<DotVByteScalarU8Encoder>>(args);
         return;
     }
 
