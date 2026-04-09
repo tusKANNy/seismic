@@ -1,8 +1,12 @@
 use clap::Parser;
+use half::f16;
 use std::fs::File;
 use std::io::Write;
 
-use vectorium::{Dataset, DotProduct, SpaceUsage, read_seismic_format};
+use vectorium::dataset::ConvertFrom;
+use vectorium::{
+    Dataset, DotProduct, ScalarSparseDataset, SpaceUsage, read_seismic_format,
+};
 
 #[derive(Parser, Debug)]
 #[clap(
@@ -26,25 +30,43 @@ fn main() {
 
     // Try loading as u16 components first (most common case).
     // If that fails (e.g. vocabulary > 65K), fall back to u32.
+    // Values are converted from f32 (on-disk) to f16 (in-memory) to match the
+    // plain ScalarSparseDataset<C, f32, f16> baseline.
     let (component_type, n_vectors, n_dimensions, avg_nnz, space_bytes) =
         match read_seismic_format::<u16, f32, DotProduct>(&args.input_file) {
-            Ok(dataset) => (
-                "u16",
-                dataset.len(),
-                dataset.input_dim(),
-                dataset.nnz() as f64 / dataset.len() as f64,
-                SpaceUsage::space_usage_bytes(&dataset),
-            ),
+            Ok(dataset_f32) => {
+                let n = dataset_f32.len();
+                let dim = dataset_f32.input_dim();
+                let nnz = dataset_f32.nnz();
+                let dataset =
+                    ScalarSparseDataset::<u16, f32, f16, DotProduct>::convert_from(dataset_f32);
+                (
+                    "u16",
+                    n,
+                    dim,
+                    nnz as f64 / n as f64,
+                    SpaceUsage::space_usage_bytes(&dataset),
+                )
+            }
             Err(e_u16) => {
                 eprintln!("Failed to load as u16 ({}), trying u32...", e_u16);
                 match read_seismic_format::<u32, f32, DotProduct>(&args.input_file) {
-                    Ok(dataset) => (
-                        "u32",
-                        dataset.len(),
-                        dataset.input_dim(),
-                        dataset.nnz() as f64 / dataset.len() as f64,
-                        SpaceUsage::space_usage_bytes(&dataset),
-                    ),
+                    Ok(dataset_f32) => {
+                        let n = dataset_f32.len();
+                        let dim = dataset_f32.input_dim();
+                        let nnz = dataset_f32.nnz();
+                        let dataset =
+                            ScalarSparseDataset::<u32, f32, f16, DotProduct>::convert_from(
+                                dataset_f32,
+                            );
+                        (
+                            "u32",
+                            n,
+                            dim,
+                            nnz as f64 / n as f64,
+                            SpaceUsage::space_usage_bytes(&dataset),
+                        )
+                    }
                     Err(e_u32) => {
                         eprintln!("Failed to load as u16: {}", e_u16);
                         eprintln!("Failed to load as u32: {}", e_u32);
