@@ -105,7 +105,9 @@ impl<C: ComponentType> PostingList<C> {
 
     #[inline]
     pub(crate) fn summaries(&self) -> &QuantizedSummary<C> {
-        self.summaries.as_ref().expect("summaries not available for medoid index")
+        self.summaries
+            .as_ref()
+            .expect("summaries not available for medoid index")
     }
 
     #[inline]
@@ -125,7 +127,6 @@ impl<C: ComponentType> PostingList<C> {
     pub(crate) fn medoid_postings_mut(&mut self) -> &mut [PackedPostingBlock] {
         &mut self.medoid_postings
     }
-
 
     pub(crate) fn get_all_doc_ranges(&self) -> Vec<std::ops::Range<usize>> {
         let mut ranges = Vec::with_capacity(self.packed_postings().len());
@@ -150,7 +151,14 @@ impl<C: ComponentType> PostingList<C> {
         S: SeismicSearchDataset,
     {
         if self.use_medoid_pruning {
-            return self.search_with_medoid(evaluator, k, heap_factor, heap, visited, forward_index);
+            return self.search_with_medoid(
+                evaluator,
+                k,
+                heap_factor,
+                heap,
+                visited,
+                forward_index,
+            );
         }
 
         let dots = self.summaries().distances(query);
@@ -188,7 +196,14 @@ impl<C: ComponentType> PostingList<C> {
         S: SeismicSearchDataset,
     {
         if self.use_medoid_pruning {
-            return self.search_with_medoid(evaluator, k, heap_factor, heap, visited, forward_index);
+            return self.search_with_medoid(
+                evaluator,
+                k,
+                heap_factor,
+                heap,
+                visited,
+                forward_index,
+            );
         }
 
         let dots = self.summaries().distances(query);
@@ -275,7 +290,9 @@ impl<C: ComponentType> PostingList<C> {
                 }
                 for i in batch_start..batch_end {
                     let medoid_range = self.medoid_postings[i].unpack();
-                    dists.push(evaluator.compute_distance(forward_index.get_with_range(medoid_range)));
+                    dists.push(
+                        evaluator.compute_distance(forward_index.get_with_range(medoid_range)),
+                    );
                 }
                 batch_start = batch_end;
             }
@@ -284,16 +301,27 @@ impl<C: ComponentType> PostingList<C> {
 
         // Scan: prune by medoid score, then evaluate non-medoid docs.
         for (block_id, medoid_dist) in distances.into_iter().enumerate() {
-            if heap.len() == k && medoid_dist.distance() < heap_factor * heap.peek().distance.distance() {
+            if heap.len() == k
+                && medoid_dist.distance() < heap_factor * heap.peek().distance.distance()
+            {
                 continue;
             }
             let medoid_range = self.medoid_postings[block_id].unpack();
             if visited.insert(medoid_range.start) {
-                heap.push(ScoredRange { distance: medoid_dist, range: medoid_range });
+                heap.push(ScoredRange {
+                    distance: medoid_dist,
+                    range: medoid_range,
+                });
             }
-            let packed_posting_block =
-                &self.packed_postings()[self.block_offsets[block_id]..self.block_offsets[block_id + 1]];
-            self.evaluate_posting_block(evaluator, packed_posting_block, heap, visited, forward_index);
+            let packed_posting_block = &self.packed_postings()
+                [self.block_offsets[block_id]..self.block_offsets[block_id + 1]];
+            self.evaluate_posting_block(
+                evaluator,
+                packed_posting_block,
+                heap,
+                visited,
+                forward_index,
+            );
         }
     }
 
@@ -560,11 +588,13 @@ where
                 let block_start = block_offsets[i];
                 let block_end = block_offsets[i + 1];
                 let medoid_id = posting_list[block_start];
-                medoid_postings
-                    .push(PackedPostingBlock::pack(dataset.range_from_id(medoid_id as u64)));
+                medoid_postings.push(PackedPostingBlock::pack(
+                    dataset.range_from_id(medoid_id as u64),
+                ));
                 for &doc_id in &posting_list[block_start + 1..block_end] {
-                    packed_postings
-                        .push(PackedPostingBlock::pack(dataset.range_from_id(doc_id as u64)));
+                    packed_postings.push(PackedPostingBlock::pack(
+                        dataset.range_from_id(doc_id as u64),
+                    ));
                 }
                 new_block_offsets.push(packed_postings.len());
             }

@@ -4,9 +4,7 @@ use std::fs::File;
 use std::io::Write;
 
 use vectorium::dataset::ConvertFrom;
-use vectorium::{
-    Dataset, DotProduct, ScalarSparseDataset, SpaceUsage, read_seismic_format,
-};
+use vectorium::{Dataset, DotProduct, ScalarSparseDataset, SpaceUsage, read_seismic_format};
 
 #[derive(Parser, Debug)]
 #[clap(

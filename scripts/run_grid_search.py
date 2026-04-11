@@ -2,6 +2,9 @@ import argparse
 import sys
 import os
 import subprocess
+import re
+import glob
+import hashlib
 
 import json
 from datetime import datetime
@@ -15,6 +18,47 @@ from run_experiments import (
     run_experiment,
     parse_toml,
 )
+
+def hash_params(params_dict):
+    """Deterministic hash of a parameter combination."""
+    canonical = json.dumps(params_dict, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def scan_completed_combinations(grid_folder, expected_query_count):
+    """Scan a grid search directory for completed combinations.
+
+    Returns a dict mapping param_hash -> index for completed combinations.
+    """
+    completed = {}
+    json_files = glob.glob(os.path.join(grid_folder, "building_combination_*.json"))
+
+    for json_path in json_files:
+        basename = os.path.basename(json_path)
+        match = re.match(r"building_combination_(\d+)\.json", basename)
+        if not match:
+            continue
+        idx = int(match.group(1))
+
+        with open(json_path) as f:
+            params = json.load(f)
+        params = {k: v for k, v in params.items() if not k.startswith("__")}
+        param_hash = hash_params(params)
+
+        exp_dirs = glob.glob(os.path.join(grid_folder, f"building_combination_{idx}_*"))
+        exp_dirs = [d for d in exp_dirs if os.path.isdir(d)]
+
+        for exp_dir in exp_dirs:
+            report_path = os.path.join(exp_dir, "report.tsv")
+            if os.path.exists(report_path):
+                with open(report_path) as f:
+                    row_count = sum(1 for line in f if line.strip()) - 1
+                if row_count >= expected_query_count:
+                    completed[param_hash] = idx
+                    break
+
+    return completed
+
 
 def generate_indexing_parameters_combinations(params):
     # Extract keys and values from the dictionary
@@ -87,7 +131,7 @@ def compute_dataset_space_usage(config_data, grid_folder):
     print(colored(f"Space usage written to {output_tsv}", "yellow"))
 
 
-def main(experiment_config_filename):
+def main(experiment_config_filename, resume_path=None):
     config_data = parse_toml(experiment_config_filename)
 
     if not config_data:
@@ -98,16 +142,24 @@ def main(experiment_config_filename):
     grid_name = config_data.get("name")
     print(f"Running Grid: {grid_name}")
 
-    # Create an experiment folder with date and hour
-    timestamp = str(datetime.now()).replace(" ", "_")
-    grid_folder = os.path.join(
-        config_data["folder"]["experiment"], f"{grid_name}_{timestamp}"
-    )
-    os.makedirs(grid_folder, exist_ok=True)
+    # Directory selection: resume existing or create new
+    if resume_path:
+        grid_folder = resume_path
+        if not os.path.isdir(grid_folder):
+            print(f"Error: Resume directory does not exist: {grid_folder}")
+            sys.exit(1)
+        print(f"Resuming grid search in: {grid_folder}")
+    else:
+        timestamp = str(datetime.now()).replace(" ", "_")
+        grid_folder = os.path.join(
+            config_data["folder"]["experiment"], f"{grid_name}_{timestamp}"
+        )
+        os.makedirs(grid_folder, exist_ok=True)
 
-    # Compile first, then compute dataset space usage before any index construction
+    # Compile first; skip space usage when resuming (already computed)
     compile_rust_code(config_data, grid_folder)
-    compute_dataset_space_usage(config_data, grid_folder)
+    if not resume_path:
+        compute_dataset_space_usage(config_data, grid_folder)
 
     print()
     print(colored("Grid search information:", "yellow"))
@@ -115,13 +167,49 @@ def main(experiment_config_filename):
     print(json.dumps(config_data["indexing_parameters"], indent=4))
 
     query_combinations = generate_query_combinations(config_data["querying_parameters"])
+    expected_query_count = len(query_combinations)
 
+    # Scan for completed combinations if resuming
+    completed_hashes = {}
+    next_index = 0
+
+    if resume_path:
+        completed_hashes = scan_completed_combinations(grid_folder, expected_query_count)
+        if completed_hashes:
+            next_index = max(completed_hashes.values()) + 1
+        print(colored(f"Found {len(completed_hashes)} completed combination(s), "
+                      f"next index: {next_index}", "green"))
+
+    combinations = generate_indexing_parameters_combinations(config_data["indexing_parameters"])
+
+    # Warn about orphaned completions (completed but not in current grid)
+    if resume_path:
+        current_hashes = {hash_params(c) for c in combinations}
+        orphaned = set(completed_hashes.keys()) - current_hashes
+        if orphaned:
+            print(colored(f"Warning: {len(orphaned)} previously completed combination(s) "
+                          f"are not in the current parameter grid (config may have changed)", "yellow"))
+
+    print(f"Total combinations: {len(combinations)}, "
+          f"already completed: {len(completed_hashes)}")
     print("Run an experiment for each building configuration")
 
-    for i, building_config in enumerate(generate_indexing_parameters_combinations(config_data["indexing_parameters"])):
+    skipped = 0
+    for building_config in combinations:
+        param_hash = hash_params(building_config)
+
+        if param_hash in completed_hashes:
+            skipped += 1
+            print(f"\nSkipping completed combination (hash={param_hash})")
+            continue
+
+        i = next_index
+        next_index += 1
+
         print()
-        print(f"Running buiding combination {i} with {config_data['indexing_parameters']}")
-        print(f"Running buiding combination {i} with {json.dumps(config_data['indexing_parameters'], indent=4)}")
+        print(f"Running building combination {i} "
+              f"(hash={param_hash}, {skipped} skipped)")
+        print(f"Running building combination {i} with {json.dumps(building_config, indent=4)}")
 
         experiment_config = {}
         experiment_config["folder"] = config_data["folder"]
@@ -133,7 +221,7 @@ def main(experiment_config_filename):
         experiment_config["name"] = f"building_combination_{i}"
 
         experiment_config["query"] = query_combinations
-        
+
         # Copy build/compile commands if they exist
         if "compile-command" in config_data:
             experiment_config["compile-command"] = config_data["compile-command"]
@@ -145,7 +233,11 @@ def main(experiment_config_filename):
         experiment_config["indexing_parameters"] = building_config
         with open(os.path.join(grid_folder, f"building_combination_{i}.json"), "w") as f:
             json.dump(building_config, f, indent=4)
-        run_experiment(experiment_config)
+        try:
+            run_experiment(experiment_config)
+        except Exception as e:
+            print(e)
+            continue
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -154,6 +246,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--exp", required=True, help="Path to the grid configuration TOML file."
     )
+    parser.add_argument(
+        "--resume", required=False, default=None,
+        help="Path to an existing grid search directory to resume."
+    )
     args = parser.parse_args()
 
-    main(args.exp)
+    main(args.exp, resume_path=args.resume)

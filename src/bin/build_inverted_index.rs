@@ -19,6 +19,12 @@ use std::time::Instant;
 use vectorium::dataset::ConvertFrom;
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
+use vectorium::encoders::dotvbyte_u32_fixedu8::{
+    DotVByteU32FixedU8Encoder, OptimisticDotVByteFixedU8Encoder,
+};
+use vectorium::encoders::dotvbyte_u32_scalaru8::{
+    DotVByteU32ScalarU8Encoder, OptimisticDotVByteScalarU8Encoder,
+};
 use vectorium::{
     ComponentType, Dataset, DotProduct, IndexSerializer, PackedSparseDataset, SpaceUsage,
     read_seismic_format,
@@ -142,7 +148,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type: f16, bf16, f32, fixedu16, fixedu8, or dotvbyte; see docs/RustUsage.md#using-the-rust-code for quantization choices.
+    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, or dotvbyte-optimistic-scalar; see docs/RustUsage.md#using-the-rust-code for quantization choices.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -320,30 +326,72 @@ where
 }
 
 fn build_dotvbyte(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotvbyte requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
     let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotVByteFixedU8Encoder>>();
-
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+    match args.component_type.as_str() {
+        "u16" => {
+            let base_index = build_base_index::<u16>(args);
+            let packed_index =
+                base_index.convert_dataset_into::<PackedSparseDataset<DotVByteFixedU8Encoder>>();
+            write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+        }
+        "u32" => {
+            let base_index = build_base_index::<u32>(args);
+            let packed_index =
+                base_index.convert_dataset_into::<PackedSparseDataset<DotVByteU32FixedU8Encoder>>();
+            write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+        }
+        _ => {
+            eprintln!("Error: dotvbyte requires component-type 'u16' or 'u32'.");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn build_dotvbyte_scalar(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotvbyte-scalar requires component-type 'u16'.");
+    let time = Instant::now();
+    match args.component_type.as_str() {
+        "u16" => {
+            let base_index = build_base_index::<u16>(args);
+            let packed_index =
+                base_index.convert_dataset_into::<PackedSparseDataset<DotVByteScalarU8Encoder>>();
+            write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+        }
+        "u32" => {
+            let base_index = build_base_index::<u32>(args);
+            let packed_index = base_index
+                .convert_dataset_into::<PackedSparseDataset<DotVByteU32ScalarU8Encoder>>();
+            write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+        }
+        _ => {
+            eprintln!("Error: dotvbyte-scalar requires component-type 'u16' or 'u32'.");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn build_dotvbyte_optimistic(args: &Args) {
+    if args.component_type != "u32" {
+        eprintln!("Error: dotvbyte-optimistic requires component-type 'u32'.");
         std::process::exit(1);
     }
 
     let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
+    let base_index = build_base_index::<u32>(args);
     let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotVByteScalarU8Encoder>>();
+        base_index.convert_dataset_into::<PackedSparseDataset<OptimisticDotVByteFixedU8Encoder>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
 
+fn build_dotvbyte_optimistic_scalar(args: &Args) {
+    if args.component_type != "u32" {
+        eprintln!("Error: dotvbyte-optimistic-scalar requires component-type 'u32'.");
+        std::process::exit(1);
+    }
+
+    let time = Instant::now();
+    let base_index = build_base_index::<u32>(args);
+    let packed_index =
+        base_index.convert_dataset_into::<PackedSparseDataset<OptimisticDotVByteScalarU8Encoder>>();
     write_index(packed_index, args.output_file.as_ref().unwrap(), time);
 }
 
@@ -357,6 +405,16 @@ fn main() {
 
     if args.value_type == "dotvbyte-scalar" {
         build_dotvbyte_scalar(&args);
+        return;
+    }
+
+    if args.value_type == "dotvbyte-optimistic" {
+        build_dotvbyte_optimistic(&args);
+        return;
+    }
+
+    if args.value_type == "dotvbyte-optimistic-scalar" {
+        build_dotvbyte_optimistic_scalar(&args);
         return;
     }
 

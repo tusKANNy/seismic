@@ -13,6 +13,12 @@ use vectorium::IndexSerializer;
 
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
+use vectorium::encoders::dotvbyte_u32_fixedu8::{
+    DotVByteU32FixedU8Encoder, OptimisticDotVByteFixedU8Encoder,
+};
+use vectorium::encoders::dotvbyte_u32_scalaru8::{
+    DotVByteU32ScalarU8Encoder, OptimisticDotVByteScalarU8Encoder,
+};
 use vectorium::{
     ComponentType, Dataset, Distance, DotProduct, PackedSparseDataset, SpaceUsage,
     SparseVectorView, VectorEncoder, read_seismic_format,
@@ -77,7 +83,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, or `fixedu16`); see docs/RustUsage.md#using-the-rust-code for recommendations.
+    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, `fixedu16`, `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, or `dotvbyte-optimistic-scalar`); see docs/RustUsage.md#using-the-rust-code for recommendations.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -131,7 +137,7 @@ macro_rules! match_component_value {
             }
         _ => {
             eprintln!(
-                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', or 'fixedu8'"
+                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', 'fixedu8', 'dotvbyte', 'dotvbyte-scalar', 'dotvbyte-optimistic', or 'dotvbyte-optimistic-scalar'"
             );
             std::process::exit(1);
         }
@@ -240,22 +246,56 @@ pub fn main() {
     let args = Args::parse();
 
     if args.value_type() == "dotvbyte" {
-        if args.component_type() != "u16" {
-            eprintln!("Error: dotvbyte is only supported with component-type 'u16'.");
-            std::process::exit(1);
+        match args.component_type() {
+            "u16" => {
+                run_performance_test_generic::<PackedSparseDataset<DotVByteFixedU8Encoder>>(args)
+            }
+            "u32" => {
+                run_performance_test_generic::<PackedSparseDataset<DotVByteU32FixedU8Encoder>>(args)
+            }
+            _ => {
+                eprintln!("Error: dotvbyte requires component-type 'u16' or 'u32'.");
+                std::process::exit(1);
+            }
         }
-
-        run_performance_test_generic::<PackedSparseDataset<DotVByteFixedU8Encoder>>(args);
         return;
     }
 
     if args.value_type() == "dotvbyte-scalar" {
-        if args.component_type() != "u16" {
-            eprintln!("Error: dotvbyte-scalar is only supported with component-type 'u16'.");
+        match args.component_type() {
+            "u16" => {
+                run_performance_test_generic::<PackedSparseDataset<DotVByteScalarU8Encoder>>(args)
+            }
+            "u32" => {
+                run_performance_test_generic::<PackedSparseDataset<DotVByteU32ScalarU8Encoder>>(
+                    args,
+                )
+            }
+            _ => {
+                eprintln!("Error: dotvbyte-scalar requires component-type 'u16' or 'u32'.");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    if args.value_type() == "dotvbyte-optimistic" {
+        if args.component_type() != "u32" {
+            eprintln!("Error: dotvbyte-optimistic requires component-type 'u32'.");
             std::process::exit(1);
         }
+        run_performance_test_generic::<PackedSparseDataset<OptimisticDotVByteFixedU8Encoder>>(args);
+        return;
+    }
 
-        run_performance_test_generic::<PackedSparseDataset<DotVByteScalarU8Encoder>>(args);
+    if args.value_type() == "dotvbyte-optimistic-scalar" {
+        if args.component_type() != "u32" {
+            eprintln!("Error: dotvbyte-optimistic-scalar requires component-type 'u32'.");
+            std::process::exit(1);
+        }
+        run_performance_test_generic::<PackedSparseDataset<OptimisticDotVByteScalarU8Encoder>>(
+            args,
+        );
         return;
     }
 
