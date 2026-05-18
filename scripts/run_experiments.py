@@ -59,7 +59,7 @@ def compile_rust_code(configs, experiment_dir):
     print()
     print(colored("Compiling the Rust code", "green"))
     
-    compile_command = configs.get("compile-command", "RUSTFLAGS='-C target-cpu=native' cargo build --release")
+    compile_command = configs.get("compile-command", "RUSTFLAGS='-C target-cpu=native' cargo build --release --bin build_inverted_index --bin perf_inverted_index --no-default-features")
 
     compilation_output_file = os.path.join(experiment_dir, "compiler.output")
 
@@ -130,7 +130,7 @@ def build_index(configs, experiment_dir):
 
 def append_value_type(command_and_params, configs):
     value_type = configs['indexing_parameters']["value-type"]
-    valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte", "dotvbyte-scalar", "dotvbyte-optimistic", "dotvbyte-optimistic-scalar"}
+    valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte", "dotvbyte-scalar", "dotvbyte-optimistic", "dotvbyte-optimistic-scalar", "blocked-sparse"}
     if value_type not in valid_value_types:
         print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(valid_value_types)}", "red"))
         sys.exit(1)
@@ -356,7 +356,7 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, inde
 
     if configs['indexing_parameters'].get("value-type", None):
         value_type = configs['indexing_parameters']["value-type"]
-        valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte", "dotvbyte-scalar", "dotvbyte-optimistic", "dotvbyte-optimistic-scalar"}
+        valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte", "dotvbyte-scalar", "dotvbyte-optimistic", "dotvbyte-optimistic-scalar", "blocked-sparse"}
         if value_type not in valid_value_types:
             print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(valid_value_types)}", "red"))
             sys.exit(1)

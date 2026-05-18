@@ -17,6 +17,7 @@ use std::hash::Hash;
 use std::time::Instant;
 
 use vectorium::dataset::ConvertFrom;
+use vectorium::encoders::blocked_sparse::BlockedSparseEncoder;
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::encoders::dotvbyte_u32_fixedu8::{
@@ -325,6 +326,18 @@ where
     }
 }
 
+fn build_blocked_sparse(args: &Args) {
+    if args.component_type != "u16" {
+        eprintln!("Error: blocked-sparse requires component-type 'u16'.");
+        std::process::exit(1);
+    }
+    let time = Instant::now();
+    let base_index = build_base_index::<u16>(args);
+    let packed_index =
+        base_index.convert_dataset_into::<PackedSparseDataset<BlockedSparseEncoder>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
+
 fn build_dotvbyte(args: &Args) {
     let time = Instant::now();
     match args.component_type.as_str() {
@@ -397,6 +410,11 @@ fn build_dotvbyte_optimistic_scalar(args: &Args) {
 
 fn main() {
     let args = Args::parse();
+
+    if args.value_type == "blocked-sparse" {
+        build_blocked_sparse(&args);
+        return;
+    }
 
     if args.value_type == "dotvbyte" {
         build_dotvbyte(&args);

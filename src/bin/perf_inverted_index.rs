@@ -11,6 +11,7 @@ use seismic::InvertedIndexBase;
 use seismic::index_traits::{ComponentFor, EncoderFor};
 use vectorium::IndexSerializer;
 
+use vectorium::encoders::blocked_sparse::BlockedSparseEncoder;
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::encoders::dotvbyte_u32_fixedu8::{
@@ -244,6 +245,15 @@ where
 
 pub fn main() {
     let args = Args::parse();
+
+    if args.value_type() == "blocked-sparse" {
+        if args.component_type() != "u16" {
+            eprintln!("Error: blocked-sparse requires component-type 'u16'.");
+            std::process::exit(1);
+        }
+        run_performance_test_generic::<PackedSparseDataset<BlockedSparseEncoder>>(args);
+        return;
+    }
 
     if args.value_type() == "dotvbyte" {
         match args.component_type() {

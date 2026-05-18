@@ -34,6 +34,7 @@ pub mod utils;
 
 /// Type aliases for quantized fixed-point types (re-exported from vectorium).
 pub use vectorium::{FixedU8Q, FixedU16Q};
+pub use vectorium::{BlockedSparseEncoder, BlockedSparseDataset};
 
 #[cfg(feature = "python")]
 pub mod pylib;
