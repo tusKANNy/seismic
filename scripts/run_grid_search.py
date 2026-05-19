@@ -120,7 +120,7 @@ def compute_dataset_space_usage(config_data, grid_folder):
     print(colored("Command:", "blue"), command)
 
     result = subprocess.run(
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        command, shell=True, stdout=subprocess.PIPE, stderr=None
     )
     print(result.stdout.decode(), end="")
 

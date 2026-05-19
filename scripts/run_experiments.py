@@ -66,7 +66,7 @@ def compile_rust_code(configs, experiment_dir):
     try:
         print("Compiling Rust code with", compile_command)
         with open(compilation_output_file, "w") as comp_output:
-            compile_process = subprocess.Popen(compile_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            compile_process = subprocess.Popen(compile_command, shell=True, stdout=subprocess.PIPE, stderr=None)
             for line in iter(compile_process.stdout.readline, b''):
                 decoded_line = line.decode()
                 print(decoded_line, end='')  # Print each line as it is produced
@@ -227,7 +227,7 @@ def build_base_index(configs, experiment_dir, build_command):
     print("Some statistics of the dataset...")
     building_time = 0
     with open(building_output_file, "w") as build_output:
-        build_process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        build_process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=None)
         for line in iter(build_process.stdout.readline, b''):
             decoded_line = line.decode()
             print(decoded_line, end='')  # Print each line as it is produced
@@ -373,7 +373,7 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, inde
     # Run the query and display output in real-time
     print(f"Running query for subsection: {subsection_name}...")
     with open(log_output_file, "w") as log:
-        query_process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        query_process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=None)
         for line in iter(query_process.stdout.readline, b''):
             decoded_line = line.decode()
             if decoded_line.startswith("Time ") and decoded_line.strip().endswith("microsecs per query"):
