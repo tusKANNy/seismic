@@ -1,0 +1,52 @@
+name =          "grid_search_msmarco_v1_cocondenser" 
+title =         "Seismic without k-NN on Cocondenser MS MARCO"
+description =   "Seismic without k-NN on Cocondenser MS MARCO"
+dataset =       "Splade cocondenser on MS-MARCO"
+# compile-command = "cargo build" # Compile in debug mode? default is release mode
+# build-command = "./target/release/build_inverted_index"
+# query-command = "./target/debug/perf_inverted_index"
+
+[settings]
+k =             100
+n-runs =        1       # Number of runs. PLEASE think carefully how increasing 
+                        #<C2><A0>this may influence your query time
+#NUMA =          "numactl --physcpubind='0' --localalloc"    # Is the machine NUMA and need to prepend "numactl --physcpubind='0-15' --localalloc" to query command? Otherwise comment this!
+build =         true   # Need to build the index or the index is already built?
+metric =        "RR@10"
+delete =        true
+
+[folder] 
+data =          "~/knn_datasets/sparse_datasets/msmarco_v1_passage/cocondenser/data"
+index =         "~/knn_indexes/sparse_datasets/msmarco_v1_passage/cocondenser/indexes"
+qrels_path =    "~/knn_datasets/sparse_datasets/msmarco_v1_passage/qrels.dev.small.tsv"
+experiment =    "."     # stdout and stderr here of running the experiment is saved here. in a specific subfolder for the current execution
+
+[filename]
+dataset =       "documents.bin"
+queries =       "queries.bin"
+groundtruth =   "groundtruth_100.tsv"
+doc_ids =       "doc_ids.npy"
+query_ids =     "queries_ids.npy"
+index =         "seismic_index"
+
+[indexing_parameters]
+n-postings =            [3000, 4000, 5000]
+centroid-fraction =     [0.1, 0.2]
+summary-energy =        [0.4, 0.5]
+knn =                   [0]
+pruning-strategy =      ["global-threshold"] # Possible options are "coi-threshold", "global-threshold", "fixed-size". Default is "global-threshold"
+#alpha =                 [0.1, 0.15, 0.2] # needed only by coi-threshold
+max-fraction =          [2.0, 3.0, 4.0, 6.0] # needed only by "global-threshold"
+clustering-algorithm =  ["random-kmeans-inverted-index-approx"] # Possible options are "random-kmeans", "random-kmeans-inverted-index", "random-kmeans-inverted-index-approx"
+kmeans-doc-cut =        [15]    # needed by "random-kmeans-inverted-index" and "random-kmeans-inverted-index-approx"
+# kmeans-pruning-factor = 0.005 # Only used by random-kmeans-inverted-index
+value-type =            ["f16", "dotvbyte"]
+min-cluster-size =      [5] 
+
+
+
+[querying_parameters]
+query-cut =             [2, 4, 6, 7, 8, 10, 12]
+heap-factor =           [0.7, 0.8, 0.9, 1.0]
+knn =                   [0]
+first-sorted =          [true]
