@@ -1,0 +1,45 @@
+name = "splade-cocondenser-mem_budget_2.0-recall_99-blocked-sparse"
+title = "Seismic Splade-cocodenser - Recall 99% (blocked-sparse)"
+description = "Recall 99% config from grid search, blocked-sparse value-type for faster dot product"
+dataset = "Splade-cocodenser on MS-MARCO"
+
+[settings]
+k = 10
+n-runs = 1
+build = true
+metric = "RR@10"
+delete = true
+
+[folder]
+data = "~/knn_datasets/sparse_datasets/msmarco_v1_passage/cocondenser/data"
+index = "~/knn_indexes/sparse_datasets/msmarco_v1_passage/cocondenser/indexes"
+qrels_path = "~/knn_datasets/sparse_datasets/msmarco_v1_passage/qrels.dev.small.tsv"
+experiment = "."
+
+[filename]
+dataset = "documents.bin"
+queries = "queries.bin"
+groundtruth = "groundtruth.tsv"
+doc_ids = "doc_ids.npy"
+query_ids = "queries_ids.npy"
+index = "splade-cocodenser_recall_99_blocked_sparse"
+
+[indexing_parameters]
+n-postings = 4000
+centroid-fraction = 0.2
+summary-energy = 0.5
+knn = 0
+clustering-algorithm = "random-kmeans-inverted-index-approx"
+kmeans-doc-cut = 15
+kmeans-pruning-factor = 0.0
+max-fraction = 4.0
+min-cluster-size = 2
+pruning-strategy = "global-threshold"
+value-type = "blocked-sparse"
+component-type = "u16"
+
+[query]
+
+[query.recall_99]
+query-cut = 6
+heap-factor = 0.8
