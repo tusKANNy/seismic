@@ -6,3 +6,4 @@ pandas
 numpy
 ranx
 pytrec_eval
+pyarrow<20
