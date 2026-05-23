@@ -60,3 +60,10 @@ grid_seismic_*/
 # Jupyter virtual documents cache
 .virtual_documents/
 **/.virtual_documents/
+
+# ICDE2026 experiments: only grid_search.toml and best_configs/ are committed.
+# Raw grid-search output (building_combination_*, the wrapper grid_* dirs,
+# space_usage.tsv at the cell root) lives on disk only.
+experiments/ICDE2026/**/building_combination_*/
+experiments/ICDE2026/**/grid_msmarco_*/
+experiments/ICDE2026/**/grid_seismic_*/
