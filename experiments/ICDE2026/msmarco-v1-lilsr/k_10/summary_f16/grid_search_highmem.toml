@@ -1,0 +1,44 @@
+name =          "grid_msmarco_v1_lilsr_summary_f16_highmem"
+title =         "Energy-preserving summary + f16 on LiLSR MS MARCO v1 (k=10) — high-memory follow-up"
+description =   "Follow-up to the explorative grid (whose builds all landed in 1.14x-1.40x forward index, leaving the 1.5x-2.0x band unexplored). Pushes n-postings into [8000, 10000, 12000], max-fraction to [4.0, 6.0], summary-energy to [0.5, 0.6] to populate the higher memory band and check whether recall 95/97/99 admit faster query points under budget 2.0. 24-build grid (3*2*2*2), same query grid as the explorative run. min-cluster-size held at 10, kmeans-doc-cut at 15 (LiLSR prefers larger clusters)."
+dataset =       "LiLSR (big) on MS-MARCO v1"
+
+[settings]
+k =             10
+n-runs =        1
+NUMA =          "numactl --physcpubind='0' --localalloc"
+build =         true
+metric =        "RR@10"
+delete =        true
+
+[folder]
+data =          "~/knn_datasets/sparse_datasets/msmarco_v1_passage/lilsr-big/data"
+index =         "~/knn_indexes/sparse_datasets/msmarco_v1_passage/lilsr-big/indexes"
+qrels_path =    "~/knn_datasets/sparse_datasets/msmarco_v1_passage/lilsr-big/data/qrels.dev.small.tsv"
+experiment =    "."
+
+[filename]
+dataset =       "documents.bin"
+queries =       "queries.bin"
+groundtruth =   "groundtruth.tsv"
+doc_ids =       "doc_ids.npy"
+query_ids =     "queries_ids.npy"
+index =         "seismic_index"
+
+[indexing_parameters]
+n-postings =            [8000, 10000, 12000]
+centroid-fraction =     [0.1, 0.2]
+summary-energy =        [0.5, 0.6]
+knn =                   [0]
+pruning-strategy =      ["global-threshold"]
+max-fraction =          [4.0, 6.0]
+clustering-algorithm =  ["random-kmeans-inverted-index-approx"]
+kmeans-doc-cut =        [15]
+value-type =            ["f16"]
+min-cluster-size =      [10]
+
+[querying_parameters]
+query-cut =             [2, 4, 6, 7, 8, 10, 12]
+heap-factor =           [0.7, 0.8, 0.9, 1.0]
+knn =                   [0]
+first-sorted =          [true, false]
