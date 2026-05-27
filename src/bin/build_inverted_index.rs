@@ -20,6 +20,7 @@ use vectorium::dataset::ConvertFrom;
 use vectorium::encoders::blocked_sparse::BlockedSparseEncoder;
 use vectorium::encoders::dotpacking8_fixedu8::DotPacking8FixedU8Encoder;
 use vectorium::encoders::dotpacking8_scalaru8::DotPacking8ScalarU8Encoder;
+use vectorium::encoders::dotpacking8_u32_scalaru8::OptimisticDotPacking8U32ScalarU8Encoder;
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::encoders::dotvbyte_u32_fixedu8::{
@@ -151,7 +152,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, or dotpacking8-scalar; see docs/RustUsage.md#using-the-rust-code for quantization choices.
+    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, dotpacking8-scalar, or dotpacking8-optimistic-scalar; see docs/RustUsage.md#using-the-rust-code for quantization choices.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -449,6 +450,19 @@ fn build_dotpacking8_scalar(args: &Args) {
     write_index(packed_index, args.output_file.as_ref().unwrap(), time);
 }
 
+fn build_dotpacking8_optimistic_scalar(args: &Args) {
+    if args.component_type != "u32" {
+        eprintln!("Error: dotpacking8-optimistic-scalar requires component-type 'u32'.");
+        std::process::exit(1);
+    }
+
+    let time = Instant::now();
+    let base_index = build_base_index::<u32>(args);
+    let packed_index = base_index
+        .convert_dataset_into::<PackedSparseDataset<OptimisticDotPacking8U32ScalarU8Encoder>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -484,6 +498,11 @@ fn main() {
 
     if args.value_type == "dotvbyte-optimistic-scalar" {
         build_dotvbyte_optimistic_scalar(&args);
+        return;
+    }
+
+    if args.value_type == "dotpacking8-optimistic-scalar" {
+        build_dotpacking8_optimistic_scalar(&args);
         return;
     }
 

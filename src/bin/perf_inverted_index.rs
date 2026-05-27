@@ -14,6 +14,7 @@ use vectorium::IndexSerializer;
 use vectorium::encoders::blocked_sparse::BlockedSparseEncoder;
 use vectorium::encoders::dotpacking8_fixedu8::DotPacking8FixedU8Encoder;
 use vectorium::encoders::dotpacking8_scalaru8::DotPacking8ScalarU8Encoder;
+use vectorium::encoders::dotpacking8_u32_scalaru8::OptimisticDotPacking8U32ScalarU8Encoder;
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::encoders::dotvbyte_u32_fixedu8::{
@@ -86,7 +87,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, `fixedu16`, `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar`, `dotpacking8-fixedu8`, or `dotpacking8-scalar`); see docs/RustUsage.md#using-the-rust-code for recommendations.
+    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, `fixedu16`, `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar`, `dotpacking8-fixedu8`, `dotpacking8-scalar`, or `dotpacking8-optimistic-scalar`); see docs/RustUsage.md#using-the-rust-code for recommendations.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -140,7 +141,7 @@ macro_rules! match_component_value {
             }
         _ => {
             eprintln!(
-                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', 'fixedu8', 'dotvbyte', 'dotvbyte-scalar', 'dotvbyte-optimistic', 'dotvbyte-optimistic-scalar', 'dotpacking8-fixedu8', or 'dotpacking8-scalar'"
+                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', 'fixedu8', 'dotvbyte', 'dotvbyte-scalar', 'dotvbyte-optimistic', 'dotvbyte-optimistic-scalar', 'dotpacking8-fixedu8', 'dotpacking8-scalar', or 'dotpacking8-optimistic-scalar'"
             );
             std::process::exit(1);
         }
@@ -326,6 +327,17 @@ pub fn main() {
         run_performance_test_generic::<PackedSparseDataset<OptimisticDotVByteScalarU8Encoder>>(
             args,
         );
+        return;
+    }
+
+    if args.value_type() == "dotpacking8-optimistic-scalar" {
+        if args.component_type() != "u32" {
+            eprintln!("Error: dotpacking8-optimistic-scalar requires component-type 'u32'.");
+            std::process::exit(1);
+        }
+        run_performance_test_generic::<
+            PackedSparseDataset<OptimisticDotPacking8U32ScalarU8Encoder>,
+        >(args);
         return;
     }
 
