@@ -30,9 +30,23 @@ use vectorium::encoders::dotvbyte_u32_scalaru8::{
     DotVByteU32ScalarU8Encoder, OptimisticDotVByteScalarU8Encoder,
 };
 use vectorium::{
-    ComponentType, Dataset, DotProduct, IndexSerializer, PackedSparseDataset, SpaceUsage,
-    read_seismic_format,
+    ComponentType, Dataset, DotProduct, IndexSerializer, PackedCentroidSparseQuantizer,
+    PackedSparseDataset, PackedVariableBitUniformSparseQuantizer, SpaceUsage, read_seismic_format,
 };
+
+// ── Packed 4-bit quantizer hyperparameters ──────────────────────────────────
+// vectorium trains the packed quantizers inside `convert_dataset_into` and reads
+// their training hyperparameters *only* from process env vars (see vectorium's
+// `quant_env`). Env vars are therefore the single channel we have to feed them, so
+// we set them from the named constants below right before the conversion runs.
+const QUANT_LOWER_PCT: f32 = 0.0; // no lower-percentile clipping
+const QUANT_UPPER_PCT: f32 = 1.0; // no upper-percentile clipping
+const QUANT_KMEANS_ITERS: usize = 5; // packed-centroid: per-component Lloyd iterations
+// FIXME: forced 4-bit. The variable-bit uniform encoder supports nbits ∈ [1, 7], but
+// we lock it to the specialized 4-bit operating point for now (SIMD-friendly
+// interleaved nibble layout + dedicated dot-product kernel, byte-compatible with
+// packed-centroid). Drop this constant / add a flag if other widths are needed later.
+const QUANT_NBITS: u8 = 4;
 
 // clap does not support enums with associated values; keep CLI-only types in the bin.
 #[derive(clap::ValueEnum, Default, Debug, Clone)]
@@ -152,7 +166,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, dotpacking8-scalar, or dotpacking8-optimistic-scalar; see docs/RustUsage.md#using-the-rust-code for quantization choices.
+    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, dotpacking8-scalar, dotpacking8-optimistic-scalar, packed-centroid, or packed-variable-uniform; see docs/RustUsage.md#using-the-rust-code for quantization choices.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -463,6 +477,53 @@ fn build_dotpacking8_optimistic_scalar(args: &Args) {
     write_index(packed_index, args.output_file.as_ref().unwrap(), time);
 }
 
+/// Set the percentile-clipping env vars that vectorium's packed-quantizer
+/// `ConvertFrom` reads at conversion time (shared by both packed value-types).
+fn set_packed_quant_env_common() {
+    // SAFETY: called at the top of a packed build function, before `build_base_index`
+    // spawns the rayon-parallel build / conversion that reads these vars. No other
+    // thread reads the environment at this point.
+    unsafe {
+        std::env::set_var("QUANT_LOWER_PCT", QUANT_LOWER_PCT.to_string());
+        std::env::set_var("QUANT_UPPER_PCT", QUANT_UPPER_PCT.to_string());
+    }
+}
+
+fn build_packed_centroid(args: &Args) {
+    if args.component_type != "u16" {
+        eprintln!("Error: packed-centroid requires component-type 'u16'.");
+        std::process::exit(1);
+    }
+    set_packed_quant_env_common();
+    // SAFETY: see set_packed_quant_env_common.
+    unsafe {
+        std::env::set_var("QUANT_KMEANS_ITERS", QUANT_KMEANS_ITERS.to_string());
+    }
+    let time = Instant::now();
+    let base_index = build_base_index::<u16>(args);
+    let packed_index =
+        base_index.convert_dataset_into::<PackedSparseDataset<PackedCentroidSparseQuantizer>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
+
+fn build_packed_variable_uniform(args: &Args) {
+    if args.component_type != "u16" {
+        eprintln!("Error: packed-variable-uniform requires component-type 'u16'.");
+        std::process::exit(1);
+    }
+    set_packed_quant_env_common();
+    // SAFETY: see set_packed_quant_env_common. QUANT_NBITS is forced to 4 (see the
+    // const's FIXME) — we do not expose other bit widths from the CLI for now.
+    unsafe {
+        std::env::set_var("QUANT_NBITS", QUANT_NBITS.to_string());
+    }
+    let time = Instant::now();
+    let base_index = build_base_index::<u16>(args);
+    let packed_index = base_index
+        .convert_dataset_into::<PackedSparseDataset<PackedVariableBitUniformSparseQuantizer>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -503,6 +564,16 @@ fn main() {
 
     if args.value_type == "dotpacking8-optimistic-scalar" {
         build_dotpacking8_optimistic_scalar(&args);
+        return;
+    }
+
+    if args.value_type == "packed-centroid" {
+        build_packed_centroid(&args);
+        return;
+    }
+
+    if args.value_type == "packed-variable-uniform" {
+        build_packed_variable_uniform(&args);
         return;
     }
 

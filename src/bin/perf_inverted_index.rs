@@ -24,8 +24,9 @@ use vectorium::encoders::dotvbyte_u32_scalaru8::{
     DotVByteU32ScalarU8Encoder, OptimisticDotVByteScalarU8Encoder,
 };
 use vectorium::{
-    ComponentType, Dataset, Distance, DotProduct, PackedSparseDataset, SpaceUsage,
-    SparseVectorView, VectorEncoder, read_seismic_format,
+    ComponentType, Dataset, Distance, DotProduct, PackedCentroidSparseQuantizer,
+    PackedSparseDataset, PackedVariableBitUniformSparseQuantizer, SpaceUsage, SparseVectorView,
+    VectorEncoder, read_seismic_format,
 };
 
 #[derive(Parser, Debug)]
@@ -87,7 +88,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, `fixedu16`, `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar`, `dotpacking8-fixedu8`, `dotpacking8-scalar`, or `dotpacking8-optimistic-scalar`); see docs/RustUsage.md#using-the-rust-code for recommendations.
+    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, `fixedu16`, `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar`, `dotpacking8-fixedu8`, `dotpacking8-scalar`, `dotpacking8-optimistic-scalar`, `packed-centroid`, or `packed-variable-uniform`); see docs/RustUsage.md#using-the-rust-code for recommendations.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -141,7 +142,7 @@ macro_rules! match_component_value {
             }
         _ => {
             eprintln!(
-                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', 'fixedu8', 'dotvbyte', 'dotvbyte-scalar', 'dotvbyte-optimistic', 'dotvbyte-optimistic-scalar', 'dotpacking8-fixedu8', 'dotpacking8-scalar', or 'dotpacking8-optimistic-scalar'"
+                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', 'fixedu8', 'dotvbyte', 'dotvbyte-scalar', 'dotvbyte-optimistic', 'dotvbyte-optimistic-scalar', 'dotpacking8-fixedu8', 'dotpacking8-scalar', 'dotpacking8-optimistic-scalar', 'packed-centroid', or 'packed-variable-uniform'"
             );
             std::process::exit(1);
         }
@@ -338,6 +339,26 @@ pub fn main() {
         run_performance_test_generic::<
             PackedSparseDataset<OptimisticDotPacking8U32ScalarU8Encoder>,
         >(args);
+        return;
+    }
+
+    if args.value_type() == "packed-centroid" {
+        if args.component_type() != "u16" {
+            eprintln!("Error: packed-centroid requires component-type 'u16'.");
+            std::process::exit(1);
+        }
+        run_performance_test_generic::<PackedSparseDataset<PackedCentroidSparseQuantizer>>(args);
+        return;
+    }
+
+    if args.value_type() == "packed-variable-uniform" {
+        if args.component_type() != "u16" {
+            eprintln!("Error: packed-variable-uniform requires component-type 'u16'.");
+            std::process::exit(1);
+        }
+        run_performance_test_generic::<PackedSparseDataset<PackedVariableBitUniformSparseQuantizer>>(
+            args,
+        );
         return;
     }
 
