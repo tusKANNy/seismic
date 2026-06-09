@@ -18,7 +18,9 @@ use std::time::Instant;
 
 use vectorium::dataset::ConvertFrom;
 use vectorium::encoders::blocked_sparse::BlockedSparseEncoder;
+use vectorium::encoders::dotpacking8_centroid4bit::DotPacking8Centroid4BitEncoder;
 use vectorium::encoders::dotpacking8_fixedu8::DotPacking8FixedU8Encoder;
+use vectorium::encoders::dotpacking8_scalar4bit::DotPacking8Scalar4BitEncoder;
 use vectorium::encoders::dotpacking8_scalaru8::DotPacking8ScalarU8Encoder;
 use vectorium::encoders::dotpacking8_u32_scalaru8::OptimisticDotPacking8U32ScalarU8Encoder;
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
@@ -166,7 +168,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, dotpacking8-scalar, dotpacking8-optimistic-scalar, packed-centroid, or packed-variable-uniform; see docs/RustUsage.md#using-the-rust-code for quantization choices.
+    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, dotpacking8-scalar, dotpacking8-scalar4bit, dotpacking8-centroid4bit, dotpacking8-optimistic-scalar, packed-centroid, or packed-variable-uniform; see docs/RustUsage.md#using-the-rust-code for quantization choices.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -464,6 +466,32 @@ fn build_dotpacking8_scalar(args: &Args) {
     write_index(packed_index, args.output_file.as_ref().unwrap(), time);
 }
 
+fn build_dotpacking8_scalar4bit(args: &Args) {
+    if args.component_type != "u16" {
+        eprintln!("Error: dotpacking8-scalar4bit requires component-type 'u16'.");
+        std::process::exit(1);
+    }
+
+    let time = Instant::now();
+    let base_index = build_base_index::<u16>(args);
+    let packed_index =
+        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8Scalar4BitEncoder>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
+
+fn build_dotpacking8_centroid4bit(args: &Args) {
+    if args.component_type != "u16" {
+        eprintln!("Error: dotpacking8-centroid4bit requires component-type 'u16'.");
+        std::process::exit(1);
+    }
+
+    let time = Instant::now();
+    let base_index = build_base_index::<u16>(args);
+    let packed_index =
+        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8Centroid4BitEncoder>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
+
 fn build_dotpacking8_optimistic_scalar(args: &Args) {
     if args.component_type != "u32" {
         eprintln!("Error: dotpacking8-optimistic-scalar requires component-type 'u32'.");
@@ -549,6 +577,16 @@ fn main() {
 
     if args.value_type == "dotpacking8-scalar" {
         build_dotpacking8_scalar(&args);
+        return;
+    }
+
+    if args.value_type == "dotpacking8-scalar4bit" {
+        build_dotpacking8_scalar4bit(&args);
+        return;
+    }
+
+    if args.value_type == "dotpacking8-centroid4bit" {
+        build_dotpacking8_centroid4bit(&args);
         return;
     }
 
