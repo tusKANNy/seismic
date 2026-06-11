@@ -22,7 +22,9 @@ use vectorium::encoders::dotpacking8_centroid4bit::DotPacking8Centroid4BitEncode
 use vectorium::encoders::dotpacking8_fixedu8::DotPacking8FixedU8Encoder;
 use vectorium::encoders::dotpacking8_scalar4bit::DotPacking8Scalar4BitEncoder;
 use vectorium::encoders::dotpacking8_scalaru8::DotPacking8ScalarU8Encoder;
+use vectorium::encoders::dotpacking8_f16::DotPacking8f16Encoder;
 use vectorium::encoders::dotpacking8_u32_scalaru8::OptimisticDotPacking8U32ScalarU8Encoder;
+use vectorium::encoders::dotpackingsparse_f16::DotPackingSparsef16Encoder;
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::encoders::dotvbyte_u32_fixedu8::{
@@ -168,7 +170,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, dotpacking8-scalar, dotpacking8-scalar4bit, dotpacking8-centroid4bit, dotpacking8-optimistic-scalar, packed-centroid, or packed-variable-uniform; see docs/RustUsage.md#using-the-rust-code for quantization choices.
+    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, dotpacking8-scalar, dotpacking8-scalar4bit, dotpacking8-centroid4bit, dotpacking8-optimistic-scalar, dotpacking8-f16, dotpackingsparse-f16, packed-centroid, or packed-variable-uniform; see docs/RustUsage.md#using-the-rust-code for quantization choices.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -505,6 +507,32 @@ fn build_dotpacking8_optimistic_scalar(args: &Args) {
     write_index(packed_index, args.output_file.as_ref().unwrap(), time);
 }
 
+fn build_dotpacking8_f16(args: &Args) {
+    if args.component_type != "u16" {
+        eprintln!("Error: dotpacking8-f16 requires component-type 'u16'.");
+        std::process::exit(1);
+    }
+
+    let time = Instant::now();
+    let base_index = build_base_index::<u16>(args);
+    let packed_index =
+        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8f16Encoder>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
+
+fn build_dotpackingsparse_f16(args: &Args) {
+    if args.component_type != "u16" {
+        eprintln!("Error: dotpackingsparse-f16 requires component-type 'u16'.");
+        std::process::exit(1);
+    }
+
+    let time = Instant::now();
+    let base_index = build_base_index::<u16>(args);
+    let packed_index =
+        base_index.convert_dataset_into::<PackedSparseDataset<DotPackingSparsef16Encoder>>();
+    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
+}
+
 /// Set the percentile-clipping env vars that vectorium's packed-quantizer
 /// `ConvertFrom` reads at conversion time (shared by both packed value-types).
 fn set_packed_quant_env_common() {
@@ -602,6 +630,16 @@ fn main() {
 
     if args.value_type == "dotpacking8-optimistic-scalar" {
         build_dotpacking8_optimistic_scalar(&args);
+        return;
+    }
+
+    if args.value_type == "dotpacking8-f16" {
+        build_dotpacking8_f16(&args);
+        return;
+    }
+
+    if args.value_type == "dotpackingsparse-f16" {
+        build_dotpackingsparse_f16(&args);
         return;
     }
 
