@@ -67,3 +67,8 @@ grid_seismic_*/
 experiments/ICDE2026/**/building_combination_*/
 experiments/ICDE2026/**/grid_msmarco_*/
 experiments/ICDE2026/**/grid_seismic_*/
+
+# Per-run experiment output directories (the actual evaluation runs). These are
+# named with a trailing timestamp (..._YYYY-MM-DD_HH:MM:SS) and live alongside
+# the committed recall_*.toml configs under best_configs/. Keep configs, not runs.
+experiments/ICDE2026/**/*_20??-??-??_??:??:??/

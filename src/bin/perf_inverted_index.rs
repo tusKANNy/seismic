@@ -19,6 +19,7 @@ use vectorium::encoders::dotpacking8_scalaru8::DotPacking8ScalarU8Encoder;
 use vectorium::encoders::dotpacking8_f16::DotPacking8f16Encoder;
 use vectorium::encoders::dotpacking8_u32_scalaru8::OptimisticDotPacking8U32ScalarU8Encoder;
 use vectorium::encoders::dotpackingsparse_f16::DotPackingSparsef16Encoder;
+use vectorium::encoders::dotpackingsparse_scalaru8::DotPackingSparseScalarU8Encoder;
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::encoders::dotvbyte_u32_fixedu8::{
@@ -92,7 +93,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, `fixedu16`, `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar`, `dotpacking8-fixedu8`, `dotpacking8-scalar`, `dotpacking8-scalar4bit`, `dotpacking8-centroid4bit`, `dotpacking8-optimistic-scalar`, `dotpacking8-f16`, `dotpackingsparse-f16`, `packed-centroid`, or `packed-variable-uniform`); see docs/RustUsage.md#using-the-rust-code for recommendations.
+    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, `fixedu16`, `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar`, `dotpacking8-fixedu8`, `dotpacking8-scalar`, `dotpacking8-sparse-scalar`, `dotpacking8-scalar4bit`, `dotpacking8-centroid4bit`, `dotpacking8-optimistic-scalar`, `dotpacking8-f16`, `dotpackingsparse-f16`, `packed-centroid`, or `packed-variable-uniform`); see docs/RustUsage.md#using-the-rust-code for recommendations.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -146,7 +147,7 @@ macro_rules! match_component_value {
             }
         _ => {
             eprintln!(
-                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', 'fixedu8', 'dotvbyte', 'dotvbyte-scalar', 'dotvbyte-optimistic', 'dotvbyte-optimistic-scalar', 'dotpacking8-fixedu8', 'dotpacking8-scalar', 'dotpacking8-scalar4bit', 'dotpacking8-centroid4bit', 'dotpacking8-optimistic-scalar', 'dotpacking8-f16', 'dotpackingsparse-f16', 'packed-centroid', or 'packed-variable-uniform'"
+                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', 'fixedu8', 'dotvbyte', 'dotvbyte-scalar', 'dotvbyte-optimistic', 'dotvbyte-optimistic-scalar', 'dotpacking8-fixedu8', 'dotpacking8-scalar', 'dotpacking8-sparse-scalar', 'dotpacking8-scalar4bit', 'dotpacking8-centroid4bit', 'dotpacking8-optimistic-scalar', 'dotpacking8-f16', 'dotpackingsparse-f16', 'packed-centroid', or 'packed-variable-uniform'"
             );
             std::process::exit(1);
         }
@@ -312,6 +313,15 @@ pub fn main() {
             std::process::exit(1);
         }
         run_performance_test_generic::<PackedSparseDataset<DotPacking8ScalarU8Encoder>>(args);
+        return;
+    }
+
+    if args.value_type() == "dotpacking8-sparse-scalar" {
+        if args.component_type() != "u16" {
+            eprintln!("Error: dotpacking8-sparse-scalar requires component-type 'u16'.");
+            std::process::exit(1);
+        }
+        run_performance_test_generic::<PackedSparseDataset<DotPackingSparseScalarU8Encoder>>(args);
         return;
     }
 
