@@ -65,8 +65,7 @@ grid_seismic_*/
 # Raw grid-search output (building_combination_*, the wrapper grid_* dirs,
 # space_usage.tsv at the cell root) lives on disk only.
 experiments/ICDE2026/**/building_combination_*/
-experiments/ICDE2026/**/grid_msmarco_*/
-experiments/ICDE2026/**/grid_seismic_*/
+experiments/ICDE2026/**/grid_*/
 
 # Per-run experiment output directories (the actual evaluation runs). These are
 # named with a trailing timestamp (..._YYYY-MM-DD_HH:MM:SS) and live alongside
