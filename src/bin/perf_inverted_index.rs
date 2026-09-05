@@ -9,6 +9,7 @@ use num_traits::FromPrimitive;
 
 use seismic::InvertedIndexBase;
 use seismic::index_traits::{ComponentFor, EncoderFor};
+use seismic::inverted_index::Knn;
 use vectorium::IndexSerializer;
 
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
@@ -61,6 +62,14 @@ pub struct Args {
     #[clap(long, value_parser)]
     #[arg(default_value_t = 0)]
     n_knn: usize,
+
+    /// Serialized kNN graph (`.knn.seismic`) to attach to the loaded index, replacing any graph
+    /// the index was built with. `--n-knn` then selects how many of its neighbours to rescore.
+    ///
+    /// Attaching at load time is what lets one index be measured against several graphs without
+    /// a rebuild per (index, graph) pair.
+    #[clap(long, value_parser)]
+    knn_path: Option<String>,
 
     /// Whether to sort the first component by estimated dot products before search (see docs/RustUsage.md#using-the-rust-code).
     #[clap(short, long, action)]
@@ -187,9 +196,13 @@ where
 
     let nknn = args.n_knn;
 
-    let inverted_index: InvertedIndexBase<S> =
+    let mut inverted_index: InvertedIndexBase<S> =
         InvertedIndexBase::load_index(index_path.unwrap().as_str())
             .unwrap_or_else(|err| panic!("Failed to load index: {err:?}"));
+
+    if let Some(knn_path) = &args.knn_path {
+        inverted_index.add_knn(Knn::new_from_serialized(knn_path, None));
+    }
 
     let queries =
         read_seismic_format::<ComponentFor<S>, f32, DotProduct>(&args.query_file.unwrap()).unwrap();
