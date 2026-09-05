@@ -67,7 +67,9 @@ pub struct Args {
     #[arg(default_value_t = false)]
     first_sorted: bool,
 
-    /// Optional query energy filter (see docs/RustUsage.md#using-the-rust-code).
+    /// Energy-preserving query pruning. When set, the number of query components to scan is
+    /// chosen per query as the smallest prefix (by decreasing value) whose cumulative mass
+    /// reaches this fraction of the query's total mass, overriding `query_cut`.
     #[clap(long, value_parser)]
     query_energy: Option<f32>,
 
@@ -90,6 +92,34 @@ impl Args {
     pub fn value_type(&self) -> &str {
         &self.value_type
     }
+}
+
+/// Number of query components preserving at least `energy_fraction` of the query's total mass.
+///
+/// Components are taken in decreasing order of value; the cut is the smallest prefix whose
+/// cumulative mass reaches `energy_fraction` of the total. Since `search` already scans the
+/// top-`query_cut` components by value, passing this count as `query_cut` reproduces the
+/// energy-preserving query pruning exactly.
+///
+/// `buf` is scratch space reused across queries so the per-query cost stays allocation-free.
+fn energy_preserving_cut(query_values: &[f32], energy_fraction: f32, buf: &mut Vec<f32>) -> usize {
+    let total_energy: f32 = query_values.iter().sum();
+
+    buf.clear();
+    buf.extend_from_slice(query_values);
+    buf.sort_unstable_by(|a, b| b.total_cmp(a));
+
+    let mut accumulated = 0.0;
+    for (i, &value) in buf.iter().enumerate() {
+        // A non-positive total makes this comparison false throughout, falling back to the
+        // full query, which is what the reference implementation does.
+        if (accumulated + value) / total_energy >= energy_fraction {
+            return i + 1;
+        }
+        accumulated += value;
+    }
+
+    buf.len()
 }
 
 macro_rules! match_component_value {
@@ -179,7 +209,15 @@ where
         inverted_index.nnz() / inverted_index.len()
     );
 
+    match args.query_energy {
+        Some(energy_fraction) => println!(
+            "Query pruning: energy-preserving, fraction {energy_fraction} (query-cut ignored)"
+        ),
+        None => println!("Query pruning: fixed, top-{query_cut} components"),
+    }
+
     let mut results = Vec::with_capacity(n_queries);
+    let mut energy_buf = Vec::new();
 
     let time = Instant::now();
     for _ in 0..n_runs {
@@ -189,10 +227,20 @@ where
             let query_view =
                 SparseVectorView::new(components_values.components(), components_values.values());
             let query = query_view;
+
+            let effective_query_cut = match args.query_energy {
+                Some(energy_fraction) => energy_preserving_cut(
+                    components_values.values(),
+                    energy_fraction,
+                    &mut energy_buf,
+                ),
+                None => query_cut,
+            };
+
             let cur_results = inverted_index.search(
                 query,
                 args.k,
-                query_cut,
+                effective_query_cut,
                 heap_factor,
                 nknn,
                 args.first_sorted,
@@ -232,6 +280,93 @@ where
             )
             .unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::energy_preserving_cut;
+
+    /// The reference implementation this port reproduces, transcribed from the version of
+    /// `InvertedIndex::search` that produced the submitted numbers. It sorts (component, value)
+    /// pairs and returns the prefix length, which is what the port computes from values alone.
+    fn reference_cut(query_values: &[f32], energy_fraction: f32) -> usize {
+        let total_energy = query_values.iter().sum::<f32>();
+        let mut sorted_tuples: Vec<(usize, f32)> =
+            query_values.iter().copied().enumerate().collect();
+        sorted_tuples.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        let mut accumulated_energy = 0.0;
+        let mut break_index = sorted_tuples.len();
+        for (i, (_comp, val)) in sorted_tuples.iter().enumerate() {
+            if (accumulated_energy + val) / total_energy >= energy_fraction {
+                break_index = i + 1;
+                break;
+            }
+            accumulated_energy += val;
+        }
+        break_index
+    }
+
+    fn cut(query_values: &[f32], energy_fraction: f32) -> usize {
+        energy_preserving_cut(query_values, energy_fraction, &mut Vec::new())
+    }
+
+    #[test]
+    fn takes_smallest_prefix_reaching_the_requested_mass() {
+        // Uniform values: half the mass needs half the components.
+        assert_eq!(cut(&[1.0, 1.0, 1.0, 1.0], 0.5), 2);
+        // The full mass needs every component.
+        assert_eq!(cut(&[1.0, 1.0, 1.0, 1.0], 1.0), 4);
+        // A single dominant component already covers the requested fraction.
+        assert_eq!(cut(&[0.1, 0.7, 0.2], 0.6), 1);
+        assert_eq!(cut(&[0.1, 0.7, 0.2], 0.85), 2);
+    }
+
+    #[test]
+    fn considers_components_in_decreasing_order_of_value() {
+        // Input order must not matter: only the sorted mass profile does.
+        assert_eq!(cut(&[0.1, 0.7, 0.2], 0.6), cut(&[0.7, 0.2, 0.1], 0.6));
+        assert_eq!(cut(&[0.2, 0.1, 0.7], 0.6), cut(&[0.7, 0.2, 0.1], 0.6));
+    }
+
+    #[test]
+    fn degenerate_queries_fall_back_to_the_whole_query() {
+        assert_eq!(cut(&[], 0.5), 0);
+        // A zero total makes the fraction undefined; the reference scans everything.
+        assert_eq!(cut(&[0.0, 0.0, 0.0], 0.5), 3);
+    }
+
+    #[test]
+    fn matches_the_reference_implementation() {
+        let queries: [&[f32]; 6] = [
+            &[1.0, 1.0, 1.0, 1.0],
+            &[0.1, 0.7, 0.2],
+            &[2.5, 0.01, 1.25, 0.4, 0.9, 0.05],
+            &[0.3],
+            &[],
+            &[0.0, 0.0, 0.0],
+        ];
+
+        for query in queries {
+            for step in 1..=10 {
+                let energy_fraction = step as f32 / 10.0;
+                assert_eq!(
+                    cut(query, energy_fraction),
+                    reference_cut(query, energy_fraction),
+                    "mismatch for query {query:?} at energy {energy_fraction}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scratch_buffer_is_reusable_across_queries() {
+        let mut buf = Vec::new();
+        assert_eq!(energy_preserving_cut(&[0.1, 0.7, 0.2], 0.6, &mut buf), 1);
+        // A shorter query after a longer one must not see stale values.
+        assert_eq!(energy_preserving_cut(&[1.0, 1.0], 1.0, &mut buf), 2);
+        assert_eq!(energy_preserving_cut(&[0.1, 0.7, 0.2], 0.6, &mut buf), 1);
     }
 }
 

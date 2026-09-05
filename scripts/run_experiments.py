@@ -321,16 +321,33 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, inde
 
     command_and_params = [
         configs['settings']['NUMA'] if "NUMA" in configs['settings'] else "",
-        query_command, 
+        query_command,
         f"--index-file {index_file}",
         f"-k {configs['settings']['k']}",
         f"--query-file {query_file}",
-        f"--query-cut {query_config['query-cut']}",
         f"--heap-factor {query_config['heap-factor']}",
         f"--n-runs {configs['settings']['n-runs']}",
         f"--output-path {output_file}",
-          
+
     ]
+
+    # Query pruning is either energy-preserving ('query-energy', the number of scanned
+    # components is chosen per query) or fixed ('query-cut'). Exactly one must be given.
+    has_query_energy = "query-energy" in query_config
+    has_query_cut = "query-cut" in query_config
+
+    if has_query_energy and has_query_cut:
+        print(colored("ERROR: 'query-energy' and 'query-cut' are mutually exclusive, but both are set. "
+                      "Keep 'query-energy' for energy-preserving pruning, or 'query-cut' for a fixed cut.", "red"))
+        sys.exit(1)
+
+    if has_query_energy:
+        command_and_params.append(f"--query-energy {query_config['query-energy']}")
+    elif has_query_cut:
+        command_and_params.append(f"--query-cut {query_config['query-cut']}")
+    else:
+        print(colored("ERROR: a query configuration must set either 'query-energy' or 'query-cut'.", "red"))
+        sys.exit(1)
 
     if "knn" in query_config:
         command_and_params.append(f"--n-knn {query_config['knn']}" )

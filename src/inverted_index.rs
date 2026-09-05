@@ -328,8 +328,38 @@ where
             .collect()
     }
 
+    // Distributes every posting to its component's list and then applies `coi_pruning`.
+    //
+    // Unlike `fixed_pruning` this cannot use a bounded heap: the COI cut is a fraction of the
+    // *full* list length, so each list has to be materialised in full before it can be pruned.
+    // This mirrors how the strategy was applied before it was ported here.
+    fn coi_threshold_pruning(
+        dataset: &S,
+        alpha: f32,
+        n_postings: usize,
+    ) -> Vec<Vec<(ValueFor<S>, usize)>>
+    where
+        S: SeismicBuildDataset,
+        ValueFor<S>: PartialOrd + Send,
+    {
+        let mut inverted_pairs: Vec<Vec<(ValueFor<S>, usize)>> =
+            (0..dataset.input_dim()).map(|_| Vec::new()).collect();
+
+        for (i, posting) in dataset.iter().enumerate() {
+            for (&component, &value) in posting.components().iter().zip(posting.values()) {
+                inverted_pairs[component.as_()].push((value, i));
+            }
+        }
+
+        // `n_postings == 0` means no cap, and with no cap there is nothing to truncate to.
+        if n_postings > 0 {
+            Self::coi_pruning(&mut inverted_pairs, alpha, n_postings);
+        }
+
+        inverted_pairs
+    }
+
     // Implementation of the pruning strategy that selects the top-x posting from each posting list where x is alpha times the number of postings in the list or max_n_posting if too big.
-    #[allow(unused)]
     fn coi_pruning<V: PartialOrd + Send>(
         inverted_pairs: &mut Vec<Vec<(V, usize)>>,
         alpha: f32,
@@ -647,6 +677,28 @@ impl Knn {
         }
     }
 
+    /// Builds a graph from an explicit neighbour list, `dim` neighbours per vector, row major.
+    ///
+    /// This is how a graph computed elsewhere gets in. `new` recomputes the neighbours with
+    /// Seismic's own approximate search, which is a different graph from one produced by an
+    /// external kNN library, so importing and recomputing are not interchangeable when the
+    /// graph is meant to be a fixed input of an experiment.
+    pub fn from_neighbours(n_vecs: usize, dim: usize, neighbours: Vec<u64>) -> Self {
+        assert_eq!(
+            neighbours.len(),
+            n_vecs * dim,
+            "expected {} neighbours ({n_vecs} vectors x {dim}), got {}",
+            n_vecs * dim,
+            neighbours.len()
+        );
+
+        Self {
+            n_vecs,
+            dim,
+            neighbours: BitField::from(neighbours),
+        }
+    }
+
     pub fn serialize(&self, output_file: &str) -> IoResult<()> {
         let path = output_file.to_string() + ".knn.seismic";
         println!("Saving ... {}", path.as_str());
@@ -725,12 +777,8 @@ where
                 n_postings,
                 max_fraction,
             } => Self::global_threshold_pruning(&dataset, n_postings, max_fraction),
-            // Partial pruning for CoiThreshold is not implemented yet. Need to estimate the number of postings in the final list
-            PruningStrategy::CoiThreshold {
-                alpha: _,
-                n_postings: _,
-            } => {
-                todo!()
+            PruningStrategy::CoiThreshold { alpha, n_postings } => {
+                Self::coi_threshold_pruning(&dataset, alpha, n_postings)
             }
         };
 
