@@ -10,6 +10,7 @@ use num_traits::FromPrimitive;
 use seismic::InvertedIndexBase;
 use seismic::index_traits::{ComponentFor, EncoderFor};
 use seismic::inverted_index::Knn;
+use seismic::utils::energy_preserving_cut;
 use vectorium::IndexSerializer;
 
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
@@ -101,34 +102,6 @@ impl Args {
     pub fn value_type(&self) -> &str {
         &self.value_type
     }
-}
-
-/// Number of query components preserving at least `energy_fraction` of the query's total mass.
-///
-/// Components are taken in decreasing order of value; the cut is the smallest prefix whose
-/// cumulative mass reaches `energy_fraction` of the total. Since `search` already scans the
-/// top-`query_cut` components by value, passing this count as `query_cut` reproduces the
-/// energy-preserving query pruning exactly.
-///
-/// `buf` is scratch space reused across queries so the per-query cost stays allocation-free.
-fn energy_preserving_cut(query_values: &[f32], energy_fraction: f32, buf: &mut Vec<f32>) -> usize {
-    let total_energy: f32 = query_values.iter().sum();
-
-    buf.clear();
-    buf.extend_from_slice(query_values);
-    buf.sort_unstable_by(|a, b| b.total_cmp(a));
-
-    let mut accumulated = 0.0;
-    for (i, &value) in buf.iter().enumerate() {
-        // A non-positive total makes this comparison false throughout, falling back to the
-        // full query, which is what the reference implementation does.
-        if (accumulated + value) / total_energy >= energy_fraction {
-            return i + 1;
-        }
-        accumulated += value;
-    }
-
-    buf.len()
 }
 
 macro_rules! match_component_value {

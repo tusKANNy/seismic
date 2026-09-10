@@ -2,7 +2,7 @@ use crate::index_traits::{
     ComponentFor, EncoderFor, SeismicBuildDataset, SeismicSearchDataset, ValueFor,
 };
 use crate::posting_list::{PackedPostingBlock, PostingList};
-use crate::utils::KHeap;
+use crate::utils::{KHeap, energy_preserving_cut};
 
 use toolkit::{BitField, BitFieldGrowable};
 
@@ -601,6 +601,7 @@ impl Knn {
             index,
             dim,
             Self::KNN_QUERY_CUT,
+            None,
             Self::KNN_HEAP_FACTOR,
             false,
         )
@@ -612,10 +613,19 @@ impl Knn {
     /// index family; on other families a different (query_cut, heap_factor)
     /// pair can reach a higher-accuracy graph, or the same accuracy for less
     /// work, so the graph builder needs to be able to move them.
+    ///
+    /// `query_energy` selects the energy-preserving query pruning instead of
+    /// the fixed `query_cut`: each document, searched as a query, is cut at the
+    /// smallest prefix of its largest values holding that fraction of its mass
+    /// ([`energy_preserving_cut`], the same rule `perf_inverted_index` applies
+    /// to real queries). When set, `query_cut` is ignored. This is the knob
+    /// the COI variant exposes at query time, so a graph built to be compared
+    /// with COI query pruning must be built through it.
     pub fn new_with_params<S>(
         index: &InvertedIndexBase<S>,
         dim: usize,
         query_cut: usize,
+        query_energy: Option<f32>,
         heap_factor: f32,
         first_sorted: bool,
     ) -> Self
@@ -638,11 +648,21 @@ impl Knn {
                 let components = components.to_vec();
                 let query = SparseVectorView::new(components.as_slice(), f32_values.as_slice());
 
+                // Per-document cut: the same energy rule as query-side pruning. A fresh
+                // scratch buffer per document keeps the rayon closure free of shared state;
+                // its cost is negligible next to the search.
+                let effective_query_cut = match query_energy {
+                    Some(fraction) => {
+                        energy_preserving_cut(&f32_values, fraction, &mut Vec::new())
+                    }
+                    None => query_cut,
+                };
+
                 index
                     .search(
                         query,
                         dim + 1, // +1 to filter the document itself if present
-                        query_cut,
+                        effective_query_cut,
                         heap_factor,
                         0,
                         first_sorted,

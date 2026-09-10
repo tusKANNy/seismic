@@ -11,6 +11,12 @@
 //! `global-threshold` index family; on another family a different setting can reach a
 //! higher-accuracy graph, or the same accuracy for less work. Omitting all three reproduces
 //! `Knn::new` exactly.
+//!
+//! `--query-energy` replaces the fixed cut with the energy-preserving query pruning of the COI
+//! variant (the same rule `perf_inverted_index --query-energy` applies to queries): each document
+//! is cut at the smallest prefix of its largest values holding that fraction of its mass. It is
+//! the setting to use when the graph is meant to be compared with COI query pruning, whose only
+//! query-side knob is that fraction; `--query-cut` is ignored when it is given.
 
 use std::hash::Hash;
 use std::time::Instant;
@@ -43,6 +49,11 @@ pub struct Args {
     #[clap(long, value_parser)]
     #[arg(default_value_t = Knn::KNN_QUERY_CUT)]
     query_cut: usize,
+
+    /// Energy fraction of the energy-preserving query pruning applied to each document during
+    /// construction (COI's alpha_q). Overrides `--query-cut`.
+    #[clap(long, value_parser)]
+    query_energy: Option<f32>,
 
     /// Heap factor used to search each document during construction.
     #[clap(long, value_parser)]
@@ -85,16 +96,23 @@ where
         .unwrap_or_else(|err| panic!("Failed to load index: {err:?}"));
 
     println!("Number of documents: {}", inverted_index.len());
-    println!(
-        "Construction search: query-cut {}, heap-factor {}, first-sorted {}",
-        args.query_cut, args.heap_factor, args.first_sorted
-    );
+    match args.query_energy {
+        Some(energy) => println!(
+            "Construction search: query-energy {}, heap-factor {}, first-sorted {}",
+            energy, args.heap_factor, args.first_sorted
+        ),
+        None => println!(
+            "Construction search: query-cut {}, heap-factor {}, first-sorted {}",
+            args.query_cut, args.heap_factor, args.first_sorted
+        ),
+    }
 
     let time = Instant::now();
     let knn = Knn::new_with_params(
         &inverted_index,
         args.nknn,
         args.query_cut,
+        args.query_energy,
         args.heap_factor,
         args.first_sorted,
     );

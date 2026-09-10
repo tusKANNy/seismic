@@ -647,3 +647,36 @@ mod tests {
         }
     }
 }
+
+/// Number of query components preserving at least `energy_fraction` of the query's total mass.
+///
+/// Components are taken in decreasing order of value; the cut is the smallest prefix whose
+/// cumulative mass reaches `energy_fraction` of the total. Since `search` already scans the
+/// top-`query_cut` components by value, passing this count as `query_cut` reproduces the
+/// energy-preserving query pruning exactly.
+///
+/// This lives in the library rather than in `perf_inverted_index` because kNN graph construction
+/// searches each document as a query and must prune it with the *same* rule the query side uses:
+/// two copies of this function would be free to drift, and a drift would be invisible — the graph
+/// would simply be built at an operating point nobody measured.
+///
+/// `buf` is scratch space reused across queries so the per-query cost stays allocation-free.
+pub fn energy_preserving_cut(query_values: &[f32], energy_fraction: f32, buf: &mut Vec<f32>) -> usize {
+    let total_energy: f32 = query_values.iter().sum();
+
+    buf.clear();
+    buf.extend_from_slice(query_values);
+    buf.sort_unstable_by(|a, b| b.total_cmp(a));
+
+    let mut accumulated = 0.0;
+    for (i, &value) in buf.iter().enumerate() {
+        // A non-positive total makes this comparison false throughout, falling back to the
+        // full query, which is what the reference implementation does.
+        if (accumulated + value) / total_energy >= energy_fraction {
+            return i + 1;
+        }
+        accumulated += value;
+    }
+
+    buf.len()
+}
