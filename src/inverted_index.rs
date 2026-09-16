@@ -2,7 +2,7 @@ use crate::index_traits::{
     ComponentFor, EncoderFor, SeismicBuildDataset, SeismicSearchDataset, ValueFor,
 };
 use crate::posting_list::{PackedPostingBlock, PostingList};
-use crate::utils::KHeap;
+use crate::utils::{KHeap, energy_preserving_cut};
 
 use toolkit::{BitField, BitFieldGrowable};
 
@@ -583,15 +583,57 @@ impl SpaceUsage for Knn {
 }
 
 impl Knn {
+    /// Query cut used by the search-based construction when no override is given.
+    pub const KNN_QUERY_CUT: usize = 10;
+    /// Heap factor used by the search-based construction when no override is given.
+    pub const KNN_HEAP_FACTOR: f32 = 0.7;
+
+    /// Builds the graph by searching every document against `index`, with the
+    /// construction parameters this has always used: query cut 10, heap factor
+    /// 0.7, `first_sorted` off.
     pub fn new<S>(index: &InvertedIndexBase<S>, dim: usize) -> Self
     where
         S: SeismicBuildDataset + SeismicSearchDataset,
         for<'q> <EncoderFor<S> as VectorEncoder>::QueryVector<'q>:
             From<SparseVectorView<'q, ComponentFor<S>, f32>>,
     {
-        const KNN_QUERY_CUT: usize = 10;
-        const KNN_HEAP_FACTOR: f32 = 0.7;
+        Self::new_with_params(
+            index,
+            dim,
+            Self::KNN_QUERY_CUT,
+            None,
+            Self::KNN_HEAP_FACTOR,
+            false,
+        )
+    }
 
+    /// Same construction as [`Knn::new`], with the search parameters exposed.
+    ///
+    /// The defaults baked into `new` were chosen for the `global-threshold`
+    /// index family; on other families a different (query_cut, heap_factor)
+    /// pair can reach a higher-accuracy graph, or the same accuracy for less
+    /// work, so the graph builder needs to be able to move them.
+    ///
+    /// `query_energy` selects the energy-preserving query pruning instead of
+    /// the fixed `query_cut`: each document, searched as a query, is cut at the
+    /// smallest prefix of its largest values holding that fraction of its mass
+    /// ([`energy_preserving_cut`], the same rule `perf_inverted_index` applies
+    /// to real queries). When set, `query_cut` is ignored. This is the knob
+    /// the COI variant exposes at query time, so a graph built to be compared
+    /// with COI query pruning must be built through it.
+    pub fn new_with_params<S>(
+        index: &InvertedIndexBase<S>,
+        dim: usize,
+        query_cut: usize,
+        query_energy: Option<f32>,
+        heap_factor: f32,
+        first_sorted: bool,
+    ) -> Self
+    where
+        S: SeismicBuildDataset + SeismicSearchDataset,
+        for<'q> <EncoderFor<S> as VectorEncoder>::QueryVector<'q>:
+            From<SparseVectorView<'q, ComponentFor<S>, f32>>,
+    {
         let n_vecs = index.len();
         print!("Computing kNN: ");
         let docs_search_results: Vec<_> = (0..index.forward_index.len())
@@ -606,14 +648,24 @@ impl Knn {
                 let components = components.to_vec();
                 let query = SparseVectorView::new(components.as_slice(), f32_values.as_slice());
 
+                // Per-document cut: the same energy rule as query-side pruning. A fresh
+                // scratch buffer per document keeps the rayon closure free of shared state;
+                // its cost is negligible next to the search.
+                let effective_query_cut = match query_energy {
+                    Some(fraction) => {
+                        energy_preserving_cut(&f32_values, fraction, &mut Vec::new())
+                    }
+                    None => query_cut,
+                };
+
                 index
                     .search(
                         query,
                         dim + 1, // +1 to filter the document itself if present
-                        KNN_QUERY_CUT,
-                        KNN_HEAP_FACTOR,
+                        effective_query_cut,
+                        heap_factor,
                         0,
-                        false,
+                        first_sorted,
                     )
                     .into_iter()
                     .filter(|result| result.vector != my_doc_id as u64) // remove the document itself
@@ -705,6 +757,25 @@ impl Knn {
         self.save_index(path.as_str())
             .map_err(|err| std::io::Error::other(format!("{err:?}")))?;
         Ok(())
+    }
+
+    /// Number of vectors the graph stores a neighbour list for.
+    pub fn n_vecs(&self) -> usize {
+        self.n_vecs
+    }
+
+    /// Number of neighbours stored per vector.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// The stored neighbour ids of `doc_id`, in rank order.
+    pub fn neighbours_of(&self, doc_id: usize) -> Vec<u64> {
+        assert!(doc_id < self.n_vecs, "doc_id {doc_id} out of range");
+        let base_pos = doc_id * self.dim;
+        (0..self.dim)
+            .map(|i| self.neighbours.get(base_pos + i).unwrap())
+            .collect()
     }
 
     #[inline]

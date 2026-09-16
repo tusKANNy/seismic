@@ -9,6 +9,8 @@ use num_traits::FromPrimitive;
 
 use seismic::InvertedIndexBase;
 use seismic::index_traits::{ComponentFor, EncoderFor};
+use seismic::inverted_index::Knn;
+use seismic::utils::energy_preserving_cut;
 use vectorium::IndexSerializer;
 
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
@@ -62,6 +64,14 @@ pub struct Args {
     #[arg(default_value_t = 0)]
     n_knn: usize,
 
+    /// Serialized kNN graph (`.knn.seismic`) to attach to the loaded index, replacing any graph
+    /// the index was built with. `--n-knn` then selects how many of its neighbours to rescore.
+    ///
+    /// Attaching at load time is what lets one index be measured against several graphs without
+    /// a rebuild per (index, graph) pair.
+    #[clap(long, value_parser)]
+    knn_path: Option<String>,
+
     /// Whether to sort the first component by estimated dot products before search (see docs/RustUsage.md#using-the-rust-code).
     #[clap(short, long, action)]
     #[arg(default_value_t = false)]
@@ -92,34 +102,6 @@ impl Args {
     pub fn value_type(&self) -> &str {
         &self.value_type
     }
-}
-
-/// Number of query components preserving at least `energy_fraction` of the query's total mass.
-///
-/// Components are taken in decreasing order of value; the cut is the smallest prefix whose
-/// cumulative mass reaches `energy_fraction` of the total. Since `search` already scans the
-/// top-`query_cut` components by value, passing this count as `query_cut` reproduces the
-/// energy-preserving query pruning exactly.
-///
-/// `buf` is scratch space reused across queries so the per-query cost stays allocation-free.
-fn energy_preserving_cut(query_values: &[f32], energy_fraction: f32, buf: &mut Vec<f32>) -> usize {
-    let total_energy: f32 = query_values.iter().sum();
-
-    buf.clear();
-    buf.extend_from_slice(query_values);
-    buf.sort_unstable_by(|a, b| b.total_cmp(a));
-
-    let mut accumulated = 0.0;
-    for (i, &value) in buf.iter().enumerate() {
-        // A non-positive total makes this comparison false throughout, falling back to the
-        // full query, which is what the reference implementation does.
-        if (accumulated + value) / total_energy >= energy_fraction {
-            return i + 1;
-        }
-        accumulated += value;
-    }
-
-    buf.len()
 }
 
 macro_rules! match_component_value {
@@ -187,9 +169,13 @@ where
 
     let nknn = args.n_knn;
 
-    let inverted_index: InvertedIndexBase<S> =
+    let mut inverted_index: InvertedIndexBase<S> =
         InvertedIndexBase::load_index(index_path.unwrap().as_str())
             .unwrap_or_else(|err| panic!("Failed to load index: {err:?}"));
+
+    if let Some(knn_path) = &args.knn_path {
+        inverted_index.add_knn(Knn::new_from_serialized(knn_path, None));
+    }
 
     let queries =
         read_seismic_format::<ComponentFor<S>, f32, DotProduct>(&args.query_file.unwrap()).unwrap();
