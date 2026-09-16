@@ -178,10 +178,10 @@ where
         let mut evaluator = self.forward_index.encoder().query_evaluator(query_for_eval);
 
         let mut heap = KHeap::new(k);
-        let mut visited = FxHashSet::with_capacity_and_hasher(
-            query_cut.min(query_components.len()) * 5000,
-            Default::default(),
-        ); // TODO: 5000 should be n_postings
+        // A query inspects ~2k postings at the operating points of interest, so this covers
+        // most queries without a rehash while keeping the table inside L2. The previous
+        // `query_cut * 5000` sizing asked for ~288 KB per query.
+        let mut visited = FxHashSet::with_capacity_and_hasher(2000, Default::default());
 
         // Evaluate the posting list only for the top score query terms
         let mut iter = query_components

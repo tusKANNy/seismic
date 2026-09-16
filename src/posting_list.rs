@@ -14,7 +14,6 @@ use crate::utils::{
     do_random_kmeans_on_docids_ii_dot_product,
 };
 
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use num_traits::{AsPrimitive, ToPrimitive};
@@ -103,6 +102,7 @@ impl<C: ComponentType> PostingList<C> {
     pub(crate) fn summaries(&self) -> &QuantizedSummary<C> {
         &self.summaries
     }
+
     pub(crate) fn get_all_doc_ranges(&self) -> Vec<std::ops::Range<usize>> {
         let mut ranges = Vec::with_capacity(self.packed_postings().len());
         for pack in self.packed_postings().iter() {
@@ -127,22 +127,61 @@ impl<C: ComponentType> PostingList<C> {
     {
         let dots = self.summaries().distances(query);
 
-        for (block_id, dot) in dots.into_iter().enumerate() {
-            if heap.len() == k && dot < heap_factor * heap.peek().distance.distance() {
-                continue;
+        if heap.len() == k {
+            // The pruning threshold, taken once. While the blocks of this list are evaluated
+            // `heap.peek()` can only improve and `heap_factor` is positive, so the live
+            // threshold is never smaller than this one: a block dropped here would have been
+            // dropped by the live test as well. Taking it once turns the scan into a plain
+            // pass over a slice of `f32`, instead of a chain of loads from the heap that the
+            // compiler cannot hoist because the heap is mutated inside the loop.
+            let snapshot = heap_factor * heap.peek().distance.distance();
+
+            // A tiny fraction of the blocks survives, so the scan works one chunk at a time:
+            // when no element of a chunk clears the threshold the whole chunk is skipped
+            // without touching the candidate list. The reduction uses the same `d < snapshot`
+            // test as the exact check below, so a NaN score (which that test rejects) keeps its
+            // chunk alive exactly like in the scalar version.
+            const CHUNK: usize = 64;
+            let mut candidates: Vec<(usize, f32)> = Vec::with_capacity(64);
+            for (c, chunk) in dots.chunks(CHUNK).enumerate() {
+                if chunk.iter().fold(true, |acc, &d| acc & (d < snapshot)) {
+                    continue;
+                }
+                for (i, &d) in chunk.iter().enumerate() {
+                    if !(d < snapshot) {
+                        candidates.push((c * CHUNK + i, d));
+                    }
+                }
             }
 
-            let block_offsets = self.block_offsets();
-            let packed_posting_block =
-                &self.packed_postings()[block_offsets[block_id]..block_offsets[block_id + 1]];
-
-            self.evaluate_posting_block(
-                evaluator,
-                packed_posting_block,
-                heap,
-                visited,
-                forward_index,
-            );
+            for (block_id, dot) in candidates {
+                self.visit_block_if_promising(
+                    block_id,
+                    dot,
+                    evaluator,
+                    k,
+                    heap_factor,
+                    heap,
+                    visited,
+                    forward_index,
+                );
+            }
+        } else {
+            // The heap is not full yet, so there is no threshold to apply: blocks are visited in
+            // order and the live test inside `visit_block_if_promising` starts pruning as soon
+            // as the heap fills up.
+            for (block_id, dot) in dots.iter().copied().enumerate() {
+                self.visit_block_if_promising(
+                    block_id,
+                    dot,
+                    evaluator,
+                    k,
+                    heap_factor,
+                    heap,
+                    visited,
+                    forward_index,
+                );
+            }
         }
     }
 
@@ -160,29 +199,93 @@ impl<C: ComponentType> PostingList<C> {
         S: SeismicSearchDataset,
     {
         let dots = self.summaries().distances(query);
-        let dots: Vec<_> = dots
-            .into_iter()
-            .enumerate()
-            .sorted_unstable_by(|&(_, a), &(_, b)| b.total_cmp(&a))
-            .collect();
+        // Blocks are visited in decreasing summary score, but a full sort is wasted work: the
+        // heap-factor threshold lets a tiny fraction of them through, and after the first few
+        // blocks the threshold barely moves. So only the HEAD best blocks are selected and
+        // sorted (O(n)); once they have set the threshold, the rest is filtered against it in
+        // one linear pass and only the survivors get sorted. The threshold never decreases, so
+        // a block dropped here would have been skipped by the sorted scan as well, and the
+        // survivors are visited in the same order: the result is the same.
+        const HEAD: usize = 32;
+        let mut order: Vec<(usize, f32)> = dots.into_iter().enumerate().collect();
+        let n = order.len();
+        let head = HEAD.min(n);
+        let descending = |a: &(usize, f32), b: &(usize, f32)| b.1.total_cmp(&a.1);
+        if 0 < head && head < n {
+            order.select_nth_unstable_by(head - 1, descending);
+        }
+        order[..head].sort_unstable_by(descending);
 
-        for (block_id, dot) in dots {
-            if heap.len() == k && dot < heap_factor * heap.peek().distance.distance() {
-                continue;
-            }
-
-            let block_offsets = self.block_offsets();
-            let packed_posting_block =
-                &self.packed_postings()[block_offsets[block_id]..block_offsets[block_id + 1]];
-
-            self.evaluate_posting_block(
+        for &(block_id, dot) in &order[..head] {
+            self.visit_block_if_promising(
+                block_id,
+                dot,
                 evaluator,
-                packed_posting_block,
+                k,
+                heap_factor,
                 heap,
                 visited,
                 forward_index,
             );
         }
+
+        let mut tail: Vec<(usize, f32)> = if heap.len() == k {
+            let threshold = heap_factor * heap.peek().distance.distance();
+            order[head..]
+                .iter()
+                .copied()
+                .filter(|&(_, dot)| !(dot < threshold))
+                .collect()
+        } else {
+            order[head..].to_vec()
+        };
+        tail.sort_unstable_by(descending);
+
+        for (block_id, dot) in tail {
+            self.visit_block_if_promising(
+                block_id,
+                dot,
+                evaluator,
+                k,
+                heap_factor,
+                heap,
+                visited,
+                forward_index,
+            );
+        }
+    }
+
+    /// Evaluates block `block_id` unless its summary score falls under the heap-factor
+    /// threshold of the current top-k.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn visit_block_if_promising<'e, S>(
+        &self,
+        block_id: usize,
+        dot: f32,
+        evaluator: &<EncoderFor<S> as VectorEncoder>::Evaluator<'e>,
+        k: usize,
+        heap_factor: f32,
+        heap: &mut KHeap<ScoredRange<DotProduct>>,
+        visited: &mut FxHashSet<usize>,
+        forward_index: &'e S,
+    ) where
+        S: SeismicSearchDataset,
+    {
+        if heap.len() == k && dot < heap_factor * heap.peek().distance.distance() {
+            return;
+        }
+        let block_offsets = self.block_offsets();
+        let packed_posting_block =
+            &self.packed_postings()[block_offsets[block_id]..block_offsets[block_id + 1]];
+
+        self.evaluate_posting_block(
+            evaluator,
+            packed_posting_block,
+            heap,
+            visited,
+            forward_index,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -204,14 +307,44 @@ impl<C: ComponentType> PostingList<C> {
             forward_index.prefetch_with_range(range);
         }
 
+        // Unvisited documents are scored six at a time: the batched kernel walks the six
+        // vectors in lockstep, so their cache misses overlap instead of being paid one after
+        // the other, and the six accumulators are independent. Each accumulator sums in the
+        // same order as the single-vector kernel, so the scores are identical.
+        let mut buf: [std::ops::Range<usize>; 6] = Default::default();
+        let mut count = 0;
         for pack in packed_posting_block.iter() {
             let range = pack.unpack();
-
-            if visited.insert(range.start) {
-                let vector = forward_index.get_with_range(range.clone());
-                let distance = evaluator.compute_distance(vector);
-                heap.push(ScoredRange { distance, range });
+            if !visited.insert(range.start) {
+                continue;
             }
+            buf[count] = range;
+            count += 1;
+            if count == 6 {
+                let distances = evaluator.compute_distances_batch6([
+                    forward_index.get_with_range(buf[0].clone()),
+                    forward_index.get_with_range(buf[1].clone()),
+                    forward_index.get_with_range(buf[2].clone()),
+                    forward_index.get_with_range(buf[3].clone()),
+                    forward_index.get_with_range(buf[4].clone()),
+                    forward_index.get_with_range(buf[5].clone()),
+                ]);
+                for (range, distance) in buf.iter().zip(distances) {
+                    heap.push(ScoredRange {
+                        distance,
+                        range: range.clone(),
+                    });
+                }
+                count = 0;
+            }
+        }
+        for range in buf.iter().take(count) {
+            let vector = forward_index.get_with_range(range.clone());
+            let distance = evaluator.compute_distance(vector);
+            heap.push(ScoredRange {
+                distance,
+                range: range.clone(),
+            });
         }
     }
 
