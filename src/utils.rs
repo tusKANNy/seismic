@@ -646,6 +646,88 @@ mod tests {
             );
         }
     }
+
+    /// The reference implementation this port reproduces, transcribed from the version of
+    /// `InvertedIndex::search` that produced the submitted numbers. It sorts (component, value)
+    /// pairs and returns the prefix length, which is what the port computes from values alone.
+    fn reference_cut(query_values: &[f32], energy_fraction: f32) -> usize {
+        let total_energy = query_values.iter().sum::<f32>();
+        let mut sorted_tuples: Vec<(usize, f32)> =
+            query_values.iter().copied().enumerate().collect();
+        sorted_tuples.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        let mut accumulated_energy = 0.0;
+        let mut break_index = sorted_tuples.len();
+        for (i, (_comp, val)) in sorted_tuples.iter().enumerate() {
+            if (accumulated_energy + val) / total_energy >= energy_fraction {
+                break_index = i + 1;
+                break;
+            }
+            accumulated_energy += val;
+        }
+        break_index
+    }
+
+    fn cut(query_values: &[f32], energy_fraction: f32) -> usize {
+        energy_preserving_cut(query_values, energy_fraction, &mut Vec::new())
+    }
+
+    #[test]
+    fn takes_smallest_prefix_reaching_the_requested_mass() {
+        // Uniform values: half the mass needs half the components.
+        assert_eq!(cut(&[1.0, 1.0, 1.0, 1.0], 0.5), 2);
+        // The full mass needs every component.
+        assert_eq!(cut(&[1.0, 1.0, 1.0, 1.0], 1.0), 4);
+        // A single dominant component already covers the requested fraction.
+        assert_eq!(cut(&[0.1, 0.7, 0.2], 0.6), 1);
+        assert_eq!(cut(&[0.1, 0.7, 0.2], 0.85), 2);
+    }
+
+    #[test]
+    fn considers_components_in_decreasing_order_of_value() {
+        // Input order must not matter: only the sorted mass profile does.
+        assert_eq!(cut(&[0.1, 0.7, 0.2], 0.6), cut(&[0.7, 0.2, 0.1], 0.6));
+        assert_eq!(cut(&[0.2, 0.1, 0.7], 0.6), cut(&[0.7, 0.2, 0.1], 0.6));
+    }
+
+    #[test]
+    fn degenerate_queries_fall_back_to_the_whole_query() {
+        assert_eq!(cut(&[], 0.5), 0);
+        // A zero total makes the fraction undefined; the reference scans everything.
+        assert_eq!(cut(&[0.0, 0.0, 0.0], 0.5), 3);
+    }
+
+    #[test]
+    fn matches_the_reference_implementation() {
+        let queries: [&[f32]; 6] = [
+            &[1.0, 1.0, 1.0, 1.0],
+            &[0.1, 0.7, 0.2],
+            &[2.5, 0.01, 1.25, 0.4, 0.9, 0.05],
+            &[0.3],
+            &[],
+            &[0.0, 0.0, 0.0],
+        ];
+
+        for query in queries {
+            for step in 1..=10 {
+                let energy_fraction = step as f32 / 10.0;
+                assert_eq!(
+                    cut(query, energy_fraction),
+                    reference_cut(query, energy_fraction),
+                    "mismatch for query {query:?} at energy {energy_fraction}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scratch_buffer_is_reusable_across_queries() {
+        let mut buf = Vec::new();
+        assert_eq!(energy_preserving_cut(&[0.1, 0.7, 0.2], 0.6, &mut buf), 1);
+        // A shorter query after a longer one must not see stale values.
+        assert_eq!(energy_preserving_cut(&[1.0, 1.0], 1.0, &mut buf), 2);
+        assert_eq!(energy_preserving_cut(&[0.1, 0.7, 0.2], 0.6, &mut buf), 1);
+    }
 }
 
 /// Number of query components preserving at least `energy_fraction` of the query's total mass.

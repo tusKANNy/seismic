@@ -26,6 +26,7 @@ use std::cmp;
 use mem_dbg::{MemSize, SizeFlags};
 use rustc_hash::FxHashSet;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use std::io::Result as IoResult;
@@ -178,7 +179,7 @@ where
         let mut evaluator = self.forward_index.encoder().query_evaluator(query_for_eval);
 
         let mut heap = KHeap::new(k);
-        // A query inspects ~2k postings at the operating points of interest, so this covers
+        // A query inspects ~2k postings at the operating points of interest (MSMARCOV1), so this covers
         // most queries without a rehash while keeping the table inside L2. The previous
         // `query_cut * 5000` sizing asked for ~288 KB per query.
         let mut visited = FxHashSet::with_capacity_and_hasher(2000, Default::default());
@@ -283,9 +284,17 @@ where
         InvertedIndexBase::<T>::convert_dataset_from(self)
     }
 
-    // Add a precomputed knn graph to the index, limiting the number of neighbours to limit if it is not None
-    //pub fn add_knn(&mut self, knn: Knn, limit: Option<usize>) {
+    // Add a precomputed knn graph to the index. The graph must have one row per document of this
+    // index: `refine` indexes it by document id without bounds checks, so a graph of another
+    // collection (or of a prefix of this one) would be read out of bounds.
     pub fn add_knn(&mut self, knn: Knn) {
+        assert_eq!(
+            knn.n_vecs(),
+            self.len(),
+            "the kNN graph has {} rows but the index has {} documents",
+            knn.n_vecs(),
+            self.len()
+        );
         self.knn = Some(knn);
     }
 
@@ -332,7 +341,6 @@ where
     //
     // Unlike `fixed_pruning` this cannot use a bounded heap: the COI cut is a fraction of the
     // *full* list length, so each list has to be materialised in full before it can be pruned.
-    // This mirrors how the strategy was applied before it was ported here.
     fn coi_threshold_pruning(
         dataset: &S,
         alpha: f32,
@@ -635,11 +643,15 @@ impl Knn {
             From<SparseVectorView<'q, ComponentFor<S>, f32>>,
     {
         let n_vecs = index.len();
+        // Documents whose search returned fewer than `dim` neighbours (see below).
+        let short_rows = AtomicUsize::new(0);
         print!("Computing kNN: ");
         let docs_search_results: Vec<_> = (0..index.forward_index.len())
             .into_par_iter()
             .progress_count(index.forward_index.len() as u64)
-            .map(|my_doc_id| {
+            // Per-thread scratch buffer for the energy cut: one allocation per thread
+            // instead of one per document.
+            .map_init(Vec::new, |buf, my_doc_id| {
                 let vec = index.forward_index.get(my_doc_id as u64);
 
                 let components = vec.components();
@@ -648,17 +660,13 @@ impl Knn {
                 let components = components.to_vec();
                 let query = SparseVectorView::new(components.as_slice(), f32_values.as_slice());
 
-                // Per-document cut: the same energy rule as query-side pruning. A fresh
-                // scratch buffer per document keeps the rayon closure free of shared state;
-                // its cost is negligible next to the search.
+                // Per-document cut: the same energy rule as query-side pruning.
                 let effective_query_cut = match query_energy {
-                    Some(fraction) => {
-                        energy_preserving_cut(&f32_values, fraction, &mut Vec::new())
-                    }
+                    Some(fraction) => energy_preserving_cut(&f32_values, fraction, buf),
                     None => query_cut,
                 };
 
-                index
+                let mut row: Vec<u64> = index
                     .search(
                         query,
                         dim + 1, // +1 to filter the document itself if present
@@ -670,15 +678,31 @@ impl Knn {
                     .into_iter()
                     .filter(|result| result.vector != my_doc_id as u64) // remove the document itself
                     .take(dim)
-                    .collect::<Vec<_>>()
+                    .map(|result| result.vector)
+                    .collect();
+
+                // The graph is stored row major with exactly `dim` entries per document, so a
+                // short row (a document with too few postings under its cut, or an empty one)
+                // would shift every row after it. Pad it with the document itself: `refine`
+                // rescores a neighbour at most once through the visited set, and the document
+                // is either already in the heap or a legitimate candidate.
+                if row.len() < dim {
+                    short_rows.fetch_add(1, Ordering::Relaxed);
+                    row.resize(dim, my_doc_id as u64);
+                }
+                row
             })
             .collect();
 
-        let neighbours: Vec<u64> = docs_search_results
-            .into_iter()
-            .flatten()
-            .map(|result| result.vector)
-            .collect();
+        let neighbours: Vec<u64> = docs_search_results.into_iter().flatten().collect();
+        assert_eq!(neighbours.len(), n_vecs * dim);
+
+        let short_rows = short_rows.into_inner();
+        if short_rows > 0 {
+            println!(
+                "Warning: {short_rows} documents got fewer than {dim} neighbours and were padded with themselves"
+            );
+        }
 
         let bitfield = BitField::from(neighbours);
 

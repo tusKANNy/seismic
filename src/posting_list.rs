@@ -137,34 +137,30 @@ impl<C: ComponentType> PostingList<C> {
             let snapshot = heap_factor * heap.peek().distance.distance();
 
             // A tiny fraction of the blocks survives, so the scan works one chunk at a time:
-            // when no element of a chunk clears the threshold the whole chunk is skipped
-            // without touching the candidate list. The reduction uses the same `d < snapshot`
-            // test as the exact check below, so a NaN score (which that test rejects) keeps its
-            // chunk alive exactly like in the scalar version.
+            // when no element of a chunk clears the threshold the whole chunk is skipped.
+            // The per-element check is written as `!(d < snapshot)` so that it is the exact
+            // negation of the chunk reduction: the two tests agree on every score and the
+            // filter is equivalent to the scalar `if dot < threshold { skip }` it replaces.
+            // Survivors are visited in place, against the live threshold.
             const CHUNK: usize = 64;
-            let mut candidates: Vec<(usize, f32)> = Vec::with_capacity(64);
             for (c, chunk) in dots.chunks(CHUNK).enumerate() {
                 if chunk.iter().fold(true, |acc, &d| acc & (d < snapshot)) {
                     continue;
                 }
                 for (i, &d) in chunk.iter().enumerate() {
                     if !(d < snapshot) {
-                        candidates.push((c * CHUNK + i, d));
+                        self.visit_block_if_promising(
+                            c * CHUNK + i,
+                            d,
+                            evaluator,
+                            k,
+                            heap_factor,
+                            heap,
+                            visited,
+                            forward_index,
+                        );
                     }
                 }
-            }
-
-            for (block_id, dot) in candidates {
-                self.visit_block_if_promising(
-                    block_id,
-                    dot,
-                    evaluator,
-                    k,
-                    heap_factor,
-                    heap,
-                    visited,
-                    forward_index,
-                );
             }
         } else {
             // The heap is not full yet, so there is no threshold to apply: blocks are visited in
@@ -257,6 +253,10 @@ impl<C: ComponentType> PostingList<C> {
 
     /// Evaluates block `block_id` unless its summary score falls under the heap-factor
     /// threshold of the current top-k.
+    ///
+    /// The threshold is re-read from the heap here: the snapshot taken in `search` only
+    /// pre-filters, and the k-th best may have risen since, so a block that passed the
+    /// snapshot can still be skipped. With a non-full heap every block is evaluated.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     fn visit_block_if_promising<'e, S>(
