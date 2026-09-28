@@ -51,5 +51,3 @@ private_benchmarking/
 
 # Claude Code
 .claude/
-# Grid reports are *.tsv and stay out, but the six selected Table 3 rows are a deliverable.
-!experiments/tpami2026/table3_single_index.tsv
