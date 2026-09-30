@@ -9,6 +9,8 @@ use num_traits::FromPrimitive;
 
 use seismic::InvertedIndexBase;
 use seismic::index_traits::{ComponentFor, EncoderFor};
+use seismic::inverted_index::Knn;
+use seismic::utils::energy_preserving_cut;
 use vectorium::IndexSerializer;
 
 use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
@@ -62,12 +64,22 @@ pub struct Args {
     #[arg(default_value_t = 0)]
     n_knn: usize,
 
+    /// Serialized kNN graph (`.knn.seismic`) to attach to the loaded index, replacing any graph
+    /// the index was built with. `--n-knn` then selects how many of its neighbours to rescore.
+    ///
+    /// Attaching at load time is what lets one index be measured against several graphs without
+    /// a rebuild per (index, graph) pair.
+    #[clap(long, value_parser)]
+    knn_path: Option<String>,
+
     /// Whether to sort the first component by estimated dot products before search (see docs/RustUsage.md#using-the-rust-code).
     #[clap(short, long, action)]
     #[arg(default_value_t = false)]
     first_sorted: bool,
 
-    /// Optional query energy filter (see docs/RustUsage.md#using-the-rust-code).
+    /// Energy-preserving query pruning. When set, the number of query components to scan is
+    /// chosen per query as the smallest prefix (by decreasing value) whose cumulative mass
+    /// reaches this fraction of the query's total mass, overriding `query_cut`.
     #[clap(long, value_parser)]
     query_energy: Option<f32>,
 
@@ -157,9 +169,13 @@ where
 
     let nknn = args.n_knn;
 
-    let inverted_index: InvertedIndexBase<S> =
+    let mut inverted_index: InvertedIndexBase<S> =
         InvertedIndexBase::load_index(index_path.unwrap().as_str())
             .unwrap_or_else(|err| panic!("Failed to load index: {err:?}"));
+
+    if let Some(knn_path) = &args.knn_path {
+        inverted_index.add_knn(Knn::new_from_serialized(knn_path, None));
+    }
 
     let queries =
         read_seismic_format::<ComponentFor<S>, f32, DotProduct>(&args.query_file.unwrap()).unwrap();
@@ -179,7 +195,15 @@ where
         inverted_index.nnz() / inverted_index.len()
     );
 
+    match args.query_energy {
+        Some(energy_fraction) => println!(
+            "Query pruning: energy-preserving, fraction {energy_fraction} (query-cut ignored)"
+        ),
+        None => println!("Query pruning: fixed, top-{query_cut} components"),
+    }
+
     let mut results = Vec::with_capacity(n_queries);
+    let mut energy_buf = Vec::new();
 
     let time = Instant::now();
     for _ in 0..n_runs {
@@ -189,10 +213,20 @@ where
             let query_view =
                 SparseVectorView::new(components_values.components(), components_values.values());
             let query = query_view;
+
+            let effective_query_cut = match args.query_energy {
+                Some(energy_fraction) => energy_preserving_cut(
+                    components_values.values(),
+                    energy_fraction,
+                    &mut energy_buf,
+                ),
+                None => query_cut,
+            };
+
             let cur_results = inverted_index.search(
                 query,
                 args.k,
-                query_cut,
+                effective_query_cut,
                 heap_factor,
                 nknn,
                 args.first_sorted,

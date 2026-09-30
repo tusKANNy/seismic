@@ -1,6 +1,6 @@
 [package]
 name = "seismic"
-version = "0.4.0"
+version = "0.5.2"
 edition = "2024"
 license = "MIT"
 description = "Seismic is designed for effective and efficient KNN retrieval over learned sparse embeddings."
@@ -37,7 +37,11 @@ num-traits = "0.2"
 pyo3 = { version = "0.26", features = ["extension-module"], optional = true }
 numpy = { version = "0.26", optional = true }
 indicatif = { version = "0.18", features = ["rayon"] }
-vectorium = { git = "https://github.com/TusKANNy/vectorium.git" }
+# Pinned to the last revision before vectorium 0.6.0, which unified the encoder API and no
+# longer compiles against this version of seismic (`query_evaluator`, `convert_from` and
+# `convert_into` gained a config argument). Unpinned, a fresh checkout resolves to whatever
+# `main` is that day, and Cargo.lock is gitignored, so the pin has to live here.
+vectorium = { git = "https://github.com/TusKANNy/vectorium.git", rev = "39e016caed0ed030b56ab0532d4dcf0c71556b6e" }
 serde_json = "1.0"
 flate2 = "1.1"
 tar = "0.4"

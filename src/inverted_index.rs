@@ -2,7 +2,7 @@ use crate::index_traits::{
     ComponentFor, EncoderFor, SeismicBuildDataset, SeismicSearchDataset, ValueFor,
 };
 use crate::posting_list::{PackedPostingBlock, PostingList};
-use crate::utils::KHeap;
+use crate::utils::{KHeap, energy_preserving_cut};
 
 use toolkit::{BitField, BitFieldGrowable};
 
@@ -26,6 +26,7 @@ use std::cmp;
 use mem_dbg::{MemSize, SizeFlags};
 use rustc_hash::FxHashSet;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use std::io::Result as IoResult;
@@ -178,10 +179,10 @@ where
         let mut evaluator = self.forward_index.encoder().query_evaluator(query_for_eval);
 
         let mut heap = KHeap::new(k);
-        let mut visited = FxHashSet::with_capacity_and_hasher(
-            query_cut.min(query_components.len()) * 5000,
-            Default::default(),
-        ); // TODO: 5000 should be n_postings
+        // A query inspects ~2k postings at the operating points of interest (MSMARCOV1), so this covers
+        // most queries without a rehash while keeping the table inside L2. The previous
+        // `query_cut * 5000` sizing asked for ~288 KB per query.
+        let mut visited = FxHashSet::with_capacity_and_hasher(2000, Default::default());
 
         // Evaluate the posting list only for the top score query terms
         let mut iter = query_components
@@ -283,9 +284,17 @@ where
         InvertedIndexBase::<T>::convert_dataset_from(self)
     }
 
-    // Add a precomputed knn graph to the index, limiting the number of neighbours to limit if it is not None
-    //pub fn add_knn(&mut self, knn: Knn, limit: Option<usize>) {
+    // Add a precomputed knn graph to the index. The graph must have one row per document of this
+    // index: `refine` indexes it by document id without bounds checks, so a graph of another
+    // collection (or of a prefix of this one) would be read out of bounds.
     pub fn add_knn(&mut self, knn: Knn) {
+        assert_eq!(
+            knn.n_vecs(),
+            self.len(),
+            "the kNN graph has {} rows but the index has {} documents",
+            knn.n_vecs(),
+            self.len()
+        );
         self.knn = Some(knn);
     }
 
@@ -328,8 +337,40 @@ where
             .collect()
     }
 
-    // Implementation of the pruning strategy that selects the top-x posting from each posting list where x is alpha times the number of postings in the list or max_n_posting if too big.
-    #[allow(unused)]
+    // Distributes every posting to its component's list and then applies `coi_pruning`.
+    //
+    // Unlike `fixed_pruning` this cannot use a bounded heap: the COI cut is a fraction of the
+    // *full* list length, so each list has to be materialised in full before it can be pruned.
+    fn coi_threshold_pruning(
+        dataset: &S,
+        alpha: f32,
+        n_postings: usize,
+    ) -> Vec<Vec<(ValueFor<S>, usize)>>
+    where
+        S: SeismicBuildDataset,
+        ValueFor<S>: PartialOrd + Send,
+    {
+        let mut inverted_pairs: Vec<Vec<(ValueFor<S>, usize)>> =
+            (0..dataset.input_dim()).map(|_| Vec::new()).collect();
+
+        for (i, posting) in dataset.iter().enumerate() {
+            for (&component, &value) in posting.components().iter().zip(posting.values()) {
+                inverted_pairs[component.as_()].push((value, i));
+            }
+        }
+
+        // `n_postings == 0` means no cap, and with no cap there is nothing to truncate to.
+        if n_postings > 0 {
+            Self::coi_pruning(&mut inverted_pairs, alpha, n_postings);
+        }
+
+        inverted_pairs
+    }
+
+    // Set α-MSS pruning (Definition of the set α-mass subvector sketch in the paper): each posting
+    // list keeps only its top `alpha * len` entries, capped at `max_n_postings`. Note that alpha is a
+    // fraction of the list *length*, not of its L1 mass; the paper shows that this preserves a
+    // fraction alpha of each vector's L1 mass only in expectation.
     fn coi_pruning<V: PartialOrd + Send>(
         inverted_pairs: &mut Vec<Vec<(V, usize)>>,
         alpha: f32,
@@ -553,21 +594,67 @@ impl SpaceUsage for Knn {
 }
 
 impl Knn {
+    /// Query cut used by the search-based construction when no override is given.
+    pub const KNN_QUERY_CUT: usize = 10;
+    /// Heap factor used by the search-based construction when no override is given.
+    pub const KNN_HEAP_FACTOR: f32 = 0.7;
+
+    /// Builds the graph by searching every document against `index`, with the
+    /// construction parameters this has always used: query cut 10, heap factor
+    /// 0.7, `first_sorted` off.
     pub fn new<S>(index: &InvertedIndexBase<S>, dim: usize) -> Self
     where
         S: SeismicBuildDataset + SeismicSearchDataset,
         for<'q> <EncoderFor<S> as VectorEncoder>::QueryVector<'q>:
             From<SparseVectorView<'q, ComponentFor<S>, f32>>,
     {
-        const KNN_QUERY_CUT: usize = 10;
-        const KNN_HEAP_FACTOR: f32 = 0.7;
+        Self::new_with_params(
+            index,
+            dim,
+            Self::KNN_QUERY_CUT,
+            None,
+            Self::KNN_HEAP_FACTOR,
+            false,
+        )
+    }
 
+    /// Same construction as [`Knn::new`], with the search parameters exposed.
+    ///
+    /// The defaults baked into `new` were chosen for the `global-threshold`
+    /// index family; on other families a different (query_cut, heap_factor)
+    /// pair can reach a higher-accuracy graph, or the same accuracy for less
+    /// work, so the graph builder needs to be able to move them.
+    ///
+    /// `query_energy` selects the energy-preserving query pruning instead of
+    /// the fixed `query_cut`: each document, searched as a query, is cut at the
+    /// smallest prefix of its largest values holding that fraction of its mass
+    /// ([`energy_preserving_cut`], the same rule `perf_inverted_index` applies
+    /// to real queries). When set, `query_cut` is ignored. This is the knob
+    /// the COI variant exposes at query time, so a graph built to be compared
+    /// with COI query pruning must be built through it.
+    pub fn new_with_params<S>(
+        index: &InvertedIndexBase<S>,
+        dim: usize,
+        query_cut: usize,
+        query_energy: Option<f32>,
+        heap_factor: f32,
+        first_sorted: bool,
+    ) -> Self
+    where
+        S: SeismicBuildDataset + SeismicSearchDataset,
+        for<'q> <EncoderFor<S> as VectorEncoder>::QueryVector<'q>:
+            From<SparseVectorView<'q, ComponentFor<S>, f32>>,
+    {
         let n_vecs = index.len();
+        // Documents whose search returned fewer than `dim` neighbours (see below).
+        let short_rows = AtomicUsize::new(0);
         print!("Computing kNN: ");
         let docs_search_results: Vec<_> = (0..index.forward_index.len())
             .into_par_iter()
             .progress_count(index.forward_index.len() as u64)
-            .map(|my_doc_id| {
+            // Per-thread scratch buffer for the energy cut: one allocation per thread
+            // instead of one per document.
+            .map_init(Vec::new, |buf, my_doc_id| {
                 let vec = index.forward_index.get(my_doc_id as u64);
 
                 let components = vec.components();
@@ -576,27 +663,49 @@ impl Knn {
                 let components = components.to_vec();
                 let query = SparseVectorView::new(components.as_slice(), f32_values.as_slice());
 
-                index
+                // Per-document cut: the same energy rule as query-side pruning.
+                let effective_query_cut = match query_energy {
+                    Some(fraction) => energy_preserving_cut(&f32_values, fraction, buf),
+                    None => query_cut,
+                };
+
+                let mut row: Vec<u64> = index
                     .search(
                         query,
                         dim + 1, // +1 to filter the document itself if present
-                        KNN_QUERY_CUT,
-                        KNN_HEAP_FACTOR,
+                        effective_query_cut,
+                        heap_factor,
                         0,
-                        false,
+                        first_sorted,
                     )
                     .into_iter()
                     .filter(|result| result.vector != my_doc_id as u64) // remove the document itself
                     .take(dim)
-                    .collect::<Vec<_>>()
+                    .map(|result| result.vector)
+                    .collect();
+
+                // The graph is stored row major with exactly `dim` entries per document, so a
+                // short row (a document with too few postings under its cut, or an empty one)
+                // would shift every row after it. Pad it with the document itself: `refine`
+                // rescores a neighbour at most once through the visited set, and the document
+                // is either already in the heap or a legitimate candidate.
+                if row.len() < dim {
+                    short_rows.fetch_add(1, Ordering::Relaxed);
+                    row.resize(dim, my_doc_id as u64);
+                }
+                row
             })
             .collect();
 
-        let neighbours: Vec<u64> = docs_search_results
-            .into_iter()
-            .flatten()
-            .map(|result| result.vector)
-            .collect();
+        let neighbours: Vec<u64> = docs_search_results.into_iter().flatten().collect();
+        assert_eq!(neighbours.len(), n_vecs * dim);
+
+        let short_rows = short_rows.into_inner();
+        if short_rows > 0 {
+            println!(
+                "Warning: {short_rows} documents got fewer than {dim} neighbours and were padded with themselves"
+            );
+        }
 
         let bitfield = BitField::from(neighbours);
 
@@ -647,12 +756,53 @@ impl Knn {
         }
     }
 
+    /// Builds a graph from an explicit neighbour list, `dim` neighbours per vector, row major.
+    ///
+    /// This is how a graph computed elsewhere gets in. `new` recomputes the neighbours with
+    /// Seismic's own approximate search, which is a different graph from one produced by an
+    /// external kNN library, so importing and recomputing are not interchangeable when the
+    /// graph is meant to be a fixed input of an experiment.
+    pub fn from_neighbours(n_vecs: usize, dim: usize, neighbours: Vec<u64>) -> Self {
+        assert_eq!(
+            neighbours.len(),
+            n_vecs * dim,
+            "expected {} neighbours ({n_vecs} vectors x {dim}), got {}",
+            n_vecs * dim,
+            neighbours.len()
+        );
+
+        Self {
+            n_vecs,
+            dim,
+            neighbours: BitField::from(neighbours),
+        }
+    }
+
     pub fn serialize(&self, output_file: &str) -> IoResult<()> {
         let path = output_file.to_string() + ".knn.seismic";
         println!("Saving ... {}", path.as_str());
         self.save_index(path.as_str())
             .map_err(|err| std::io::Error::other(format!("{err:?}")))?;
         Ok(())
+    }
+
+    /// Number of vectors the graph stores a neighbour list for.
+    pub fn n_vecs(&self) -> usize {
+        self.n_vecs
+    }
+
+    /// Number of neighbours stored per vector.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// The stored neighbour ids of `doc_id`, in rank order.
+    pub fn neighbours_of(&self, doc_id: usize) -> Vec<u64> {
+        assert!(doc_id < self.n_vecs, "doc_id {doc_id} out of range");
+        let base_pos = doc_id * self.dim;
+        (0..self.dim)
+            .map(|i| self.neighbours.get(base_pos + i).unwrap())
+            .collect()
     }
 
     #[inline]
@@ -725,12 +875,8 @@ where
                 n_postings,
                 max_fraction,
             } => Self::global_threshold_pruning(&dataset, n_postings, max_fraction),
-            // Partial pruning for CoiThreshold is not implemented yet. Need to estimate the number of postings in the final list
-            PruningStrategy::CoiThreshold {
-                alpha: _,
-                n_postings: _,
-            } => {
-                todo!()
+            PruningStrategy::CoiThreshold { alpha, n_postings } => {
+                Self::coi_threshold_pruning(&dataset, alpha, n_postings)
             }
         };
 

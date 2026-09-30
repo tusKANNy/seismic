@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pyseismic-lsr"
-version = "0.5.1"
+version = "0.5.2"
 description = "Seismic: A high-performance data structure for fast retrieval over learned sparse representations."
 requires-python = ">=3.7"
 classifiers = [
