@@ -59,14 +59,14 @@ def compile_rust_code(configs, experiment_dir):
     print()
     print(colored("Compiling the Rust code", "green"))
     
-    compile_command = configs.get("compile-command", "RUSTFLAGS='-C target-cpu=native' cargo build --release")
+    compile_command = configs.get("compile-command", "RUSTFLAGS='-C target-cpu=native' cargo build --release --bin build_inverted_index --bin perf_inverted_index --bin dataset_space_usage --no-default-features")
 
     compilation_output_file = os.path.join(experiment_dir, "compiler.output")
 
     try:
         print("Compiling Rust code with", compile_command)
         with open(compilation_output_file, "w") as comp_output:
-            compile_process = subprocess.Popen(compile_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            compile_process = subprocess.Popen(compile_command, shell=True, stdout=subprocess.PIPE, stderr=None)
             for line in iter(compile_process.stdout.readline, b''):
                 decoded_line = line.decode()
                 print(decoded_line, end='')  # Print each line as it is produced
@@ -130,11 +130,11 @@ def build_index(configs, experiment_dir):
 
 def append_value_type(command_and_params, configs):
     value_type = configs['indexing_parameters']["value-type"]
-    valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte"}
+    valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte", "dotvbyte-scalar", "dotvbyte-optimistic", "dotvbyte-optimistic-scalar", "dotpacking8-fixedu8", "dotpacking8-scalar", "dotpacking8-sparse-scalar", "dotpacking8-scalar4bit", "dotpacking8-centroid4bit", "dotpacking8-optimistic-scalar", "dotpacking8-f16", "dotpackingsparse-f16", "blocked-sparse"}
     if value_type not in valid_value_types:
         print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(valid_value_types)}", "red"))
         sys.exit(1)
-    
+
     command_and_params.append(f"--value-type {value_type}")
 
 
@@ -161,7 +161,6 @@ def build_base_index(configs, experiment_dir, build_command):
         f"--input-file {input_file}",
         f"--output-file {output_file}",
         f"--n-postings {configs['indexing_parameters']['n-postings']}",
-        f"--summary-energy {configs['indexing_parameters']['summary-energy']}",
         f"--centroid-fraction {configs['indexing_parameters']['centroid-fraction']}",
         f"--knn {configs['indexing_parameters']['knn']}",
         f"--clustering-algorithm {configs['indexing_parameters']['clustering-algorithm']}",
@@ -171,6 +170,9 @@ def build_base_index(configs, experiment_dir, build_command):
         knn_path = os.path.join(configs['folder']['data'], configs['filename']['knn_path'])
         knn_path_arg = f"--knn-path {knn_path}"
         command_and_params.append(knn_path_arg)
+
+    if configs['indexing_parameters'].get('summary-energy', None):
+        command_and_params.append(f"--summary-energy {configs['indexing_parameters']['summary-energy']}")
 
     if configs['indexing_parameters'].get('kmeans-pruning-factor', None):
         kmeans_pruning_factor = configs['indexing_parameters']['kmeans-pruning-factor']
@@ -206,6 +208,10 @@ def build_base_index(configs, experiment_dir, build_command):
     pruning_strategy = configs['indexing_parameters'].get("pruning-strategy", "global-threshold")
     command_and_params.append(f"--pruning-strategy {pruning_strategy}")
 
+    if configs['indexing_parameters'].get("summarization-strategy", None):
+        summarization_strategy = configs['indexing_parameters']["summarization-strategy"]
+        command_and_params.append(f"--summarization-strategy {summarization_strategy}")
+
     command = ' '.join(command_and_params)
 
     # Print the command that will be executed
@@ -221,7 +227,7 @@ def build_base_index(configs, experiment_dir, build_command):
     print("Some statistics of the dataset...")
     building_time = 0
     with open(building_output_file, "w") as build_output:
-        build_process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        build_process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=None)
         for line in iter(build_process.stdout.readline, b''):
             decoded_line = line.decode()
             print(decoded_line, end='')  # Print each line as it is produced
@@ -367,7 +373,7 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, inde
 
     if configs['indexing_parameters'].get("value-type", None):
         value_type = configs['indexing_parameters']["value-type"]
-        valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte"}
+        valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte", "dotvbyte-scalar", "dotvbyte-optimistic", "dotvbyte-optimistic-scalar", "dotpacking8-fixedu8", "dotpacking8-scalar", "dotpacking8-sparse-scalar", "dotpacking8-scalar4bit", "dotpacking8-centroid4bit", "dotpacking8-optimistic-scalar", "dotpacking8-f16", "dotpackingsparse-f16", "blocked-sparse"}
         if value_type not in valid_value_types:
             print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(valid_value_types)}", "red"))
             sys.exit(1)
@@ -384,7 +390,7 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, inde
     # Run the query and display output in real-time
     print(f"Running query for subsection: {subsection_name}...")
     with open(log_output_file, "w") as log:
-        query_process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        query_process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=None)
         for line in iter(query_process.stdout.readline, b''):
             decoded_line = line.decode()
             if decoded_line.startswith("Time ") and decoded_line.strip().endswith("microsecs per query"):

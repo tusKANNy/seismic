@@ -1,6 +1,7 @@
 import argparse
 import sys
 import os
+import subprocess
 import re
 import glob
 import hashlib
@@ -11,8 +12,9 @@ from termcolor import colored
 
 import itertools
 
-# from run_experiments import 
+# from run_experiments import
 from run_experiments import (
+    compile_rust_code,
     run_experiment,
     parse_toml,
 )
@@ -102,6 +104,36 @@ def generate_query_combinations(params):
     return combination_dict
 
 
+def compute_dataset_space_usage(config_data, grid_folder):
+    """Run dataset_space_usage binary to log the plain forward index size."""
+    for k, v in config_data["folder"].items():
+        if v.startswith("~"):
+            config_data["folder"][k] = os.path.expanduser(v)
+
+    dataset_path = os.path.join(
+        config_data["folder"]["data"], config_data["filename"]["dataset"]
+    )
+    output_tsv = os.path.join(grid_folder, "space_usage.tsv")
+    binary = "./target/release/dataset_space_usage"
+
+    command = f"{binary} --input-file {dataset_path} --output-file {output_tsv}"
+
+    print()
+    print(colored("Computing dataset space usage:", "green"))
+    print(colored("Command:", "blue"), command)
+
+    result = subprocess.run(
+        command, shell=True, stdout=subprocess.PIPE, stderr=None
+    )
+    print(result.stdout.decode(), end="")
+
+    if result.returncode != 0:
+        print(colored("ERROR: dataset_space_usage failed!", "red"))
+        sys.exit(1)
+
+    print(colored(f"Space usage written to {output_tsv}", "yellow"))
+
+
 def main(experiment_config_filename, resume_path=None):
     config_data = parse_toml(experiment_config_filename)
 
@@ -126,6 +158,11 @@ def main(experiment_config_filename, resume_path=None):
             config_data["folder"]["experiment"], f"{grid_name}_{timestamp}"
         )
         os.makedirs(grid_folder, exist_ok=True)
+
+    # Compile first; skip space usage when resuming (already computed)
+    compile_rust_code(config_data, grid_folder)
+    if not resume_path:
+        compute_dataset_space_usage(config_data, grid_folder)
 
     print()
     print(colored("Grid search information:", "yellow"))
@@ -203,7 +240,6 @@ def main(experiment_config_filename, resume_path=None):
             run_experiment(experiment_config)
         except Exception as e:
             print(e)
-
             continue
 
 if __name__ == "__main__":

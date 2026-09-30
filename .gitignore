@@ -51,3 +51,12 @@ private_benchmarking/
 
 # Claude Code
 .claude/
+
+# Grid-search run artifacts (kept on disk, not in git)
+grid_msmarco_*/
+grid_search_msmarco*/
+grid_seismic_*/
+
+# Jupyter virtual documents cache
+.virtual_documents/
+**/.virtual_documents/

@@ -37,11 +37,12 @@ num-traits = "0.2"
 pyo3 = { version = "0.26", features = ["extension-module"], optional = true }
 numpy = { version = "0.26", optional = true }
 indicatif = { version = "0.18", features = ["rayon"] }
-# Pinned to the last revision before vectorium 0.6.0, which unified the encoder API and no
-# longer compiles against this version of seismic (`query_evaluator`, `convert_from` and
-# `convert_into` gained a config argument). Unpinned, a fresh checkout resolves to whatever
-# `main` is that day, and Cargo.lock is gitignored, so the pin has to live here.
-vectorium = { git = "https://github.com/TusKANNy/vectorium.git", rev = "39e016caed0ed030b56ab0532d4dcf0c71556b6e" }
+# The medoid summarization and the dotvbyte/dotpacking value types need the encoders of
+# `vectorium_private@feature/quantization`. Pinned to the revision of that branch that also
+# carries the `FlatIndex` and the sparse batch-of-six kernel this version of seismic relies on.
+# Unpinned, a fresh checkout resolves to whatever the branch is that day, and Cargo.lock is
+# gitignored, so the pin has to live here.
+vectorium = { git = "https://github.com/TusKANNy/vectorium_private.git", rev = "b6d6c73640ece276ec02e474a52b60b02d945e4a" }
 serde_json = "1.0"
 flate2 = "1.1"
 tar = "0.4"
