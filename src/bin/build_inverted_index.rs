@@ -98,7 +98,7 @@ pub struct Args {
     #[arg(default_value_t = 2)]
     min_cluster_size: usize,
 
-    /// Regulates the fraction of L1 mass preserved by the COI pruning strategy; see docs/RustUsage.md#using-the-rust-code.
+    /// Fraction of each posting list kept by the coi-threshold pruning strategy (top `alpha * len` entries, capped at `n_postings`); see docs/RustUsage.md#using-the-rust-code.
     #[clap(short, long, value_parser)]
     #[arg(default_value_t = 0.15)]
     alpha: f32,

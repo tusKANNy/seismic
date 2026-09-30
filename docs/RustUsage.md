@@ -32,7 +32,7 @@ Seismic has several parameters that control the space/time trade-offs when build
 - `--kmeans-doc-cut` number of top components retained while clustering (default: 15). Used by `random-kmeans-inverted-index` and `random-kmeans-inverted-index-approx`.
 - `--kmeans-pruning-factor` pruning factor used by the random k-means blocking (default: 0.005). Used by `random-kmeans-inverted-index` only.
 - `--min-cluster-size` minimum cluster size allowed (default: 2).
-- `-a, --alpha` fraction of L1 mass preserved by the COI pruning strategy (default: 0.15).
+- `-a, --alpha` parameter of the `coi-threshold` pruning strategy (default: 0.15): each posting list keeps only its `alpha * len` largest entries, further capped at `n-postings`. This is the Set α-MSS of the paper; in expectation it preserves a fraction `alpha` of the L1 mass of each vector.
 - `-m, --max-fraction` maximum posting list length as a factor of `n_postings` (default: 1.5).
 - `--knn` number of neighbors stored per vector for the k-NN graph (default: 0, i.e., disabled).
 - `--knn-path` path to a precomputed nearest-neighbor file.

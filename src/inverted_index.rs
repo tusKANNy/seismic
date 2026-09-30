@@ -367,7 +367,10 @@ where
         inverted_pairs
     }
 
-    // Implementation of the pruning strategy that selects the top-x posting from each posting list where x is alpha times the number of postings in the list or max_n_posting if too big.
+    // Set α-MSS pruning (Definition of the set α-mass subvector sketch in the paper): each posting
+    // list keeps only its top `alpha * len` entries, capped at `max_n_postings`. Note that alpha is a
+    // fraction of the list *length*, not of its L1 mass; the paper shows that this preserves a
+    // fraction alpha of each vector's L1 mass only in expectation.
     fn coi_pruning<V: PartialOrd + Send>(
         inverted_pairs: &mut Vec<Vec<(V, usize)>>,
         alpha: f32,

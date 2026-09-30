@@ -163,7 +163,7 @@ kmeans-pruning-factor = 0.005       # Pruning factor for inverted index kmeans
 ### Pruning Strategy Parameters
 ```toml
 pruning-strategy =      "global-threshold"  # Pruning strategy choice
-alpha =                 0.2                 # COI threshold parameter
+alpha =                 0.2                 # coi-threshold parameter: fraction of each posting list kept
 # max-fraction =          1.5               # Global threshold parameter
 ```
 
@@ -185,11 +185,11 @@ alpha =                 0.2                 # COI threshold parameter
 
 **Pruning Strategy Options:**
 - `"global-threshold"`: Global threshold-based pruning (requires `max-fraction`)
-- `"coi-threshold"`: COI (Contribution of Information) threshold pruning (requires `alpha`)
+- `"coi-threshold"`: per-list pruning, the Set α-MSS of the paper (requires `alpha`; `n-postings` acts as a cap)
 - `"fixed-size"`: Fixed-size pruning
 
 **Pruning Parameters:**
-- `alpha`: COI threshold parameter (0.0-1.0) - fraction of L1 mass preserved
+- `alpha`: `coi-threshold` parameter (0.0-1.0) - each posting list keeps only its `alpha * len` largest entries, capped at `n-postings`. In expectation this preserves a fraction `alpha` of the L1 mass of each vector
 - `max-fraction`: Maximum posting list length as multiple of `n-postings` (e.g., 1.5 = 150% of n-postings)
 
 ## Query Section
