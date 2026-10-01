@@ -63,6 +63,7 @@ dataset =       "Dataset description (e.g., 'Splade cocondenser on MS-MARCO')"
 - `compile-command`: Optional custom compilation command (commented by default)
 - `build-command`: Optional custom index building command (commented by default)
 - `query-command`: Optional custom query execution command (commented by default)
+- `space-usage-command`: Optional custom path of the `dataset_space_usage` binary, used by the grid search only (default: `./target/release/dataset_space_usage`). Set it when `compile-command` builds the binaries elsewhere (e.g. `./target/debug/dataset_space_usage`)
 
 ## Settings Section
 

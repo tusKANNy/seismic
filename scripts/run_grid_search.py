@@ -114,7 +114,7 @@ def compute_dataset_space_usage(config_data, grid_folder):
         config_data["folder"]["data"], config_data["filename"]["dataset"]
     )
     output_tsv = os.path.join(grid_folder, "space_usage.tsv")
-    binary = "./target/release/dataset_space_usage"
+    binary = config_data.get("space-usage-command", "./target/release/dataset_space_usage")
 
     command = f"{binary} --input-file {dataset_path} --output-file {output_tsv}"
 
@@ -127,9 +127,10 @@ def compute_dataset_space_usage(config_data, grid_folder):
     )
     print(result.stdout.decode(), end="")
 
+    # The space usage report is not needed by the experiments: do not stop the grid for it.
     if result.returncode != 0:
-        print(colored("ERROR: dataset_space_usage failed!", "red"))
-        sys.exit(1)
+        print(colored(f"WARNING: '{binary}' failed, skipping the dataset space usage report.", "red"))
+        return
 
     print(colored(f"Space usage written to {output_tsv}", "yellow"))
 
