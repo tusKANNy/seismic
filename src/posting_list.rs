@@ -129,9 +129,25 @@ impl<C: ComponentType> PostingList<C> {
     }
 
     pub(crate) fn get_all_doc_ranges(&self) -> Vec<std::ops::Range<usize>> {
-        let mut ranges = Vec::with_capacity(self.packed_postings().len());
-        for pack in self.packed_postings().iter() {
-            ranges.push(pack.unpack());
+        let mut ranges =
+            Vec::with_capacity(self.packed_postings().len() + self.medoid_postings().len());
+
+        if !self.use_medoid_pruning {
+            for pack in self.packed_postings().iter() {
+                ranges.push(pack.unpack());
+            }
+            return ranges;
+        }
+
+        // Medoid lists keep the medoid of each block apart from the other docs of the block:
+        // emit it first, followed by the rest of its block.
+        for (block_id, medoid) in self.medoid_postings().iter().enumerate() {
+            ranges.push(medoid.unpack());
+            let block = &self.packed_postings()
+                [self.block_offsets[block_id]..self.block_offsets[block_id + 1]];
+            for pack in block.iter() {
+                ranges.push(pack.unpack());
+            }
         }
 
         ranges
@@ -411,51 +427,113 @@ impl<C: ComponentType> PostingList<C> {
             return;
         }
 
-        // Batched prefetch + compute medoid distances (B=8).
-        let distances: Vec<DotProduct> = {
-            const BATCH: usize = 8;
-            let mut dists = Vec::with_capacity(n_blocks);
-            let mut batch_start = 0;
-            while batch_start < n_blocks {
-                let batch_end = (batch_start + BATCH).min(n_blocks);
-                for i in batch_start..batch_end {
-                    forward_index.prefetch_with_range(self.medoid_postings[i].unpack());
-                }
-                for i in batch_start..batch_end {
-                    let medoid_range = self.medoid_postings[i].unpack();
-                    dists.push(
-                        evaluator.compute_distance(forward_index.get_with_range(medoid_range)),
-                    );
-                }
-                batch_start = batch_end;
+        // The medoid of every block is scored against the query: these scores play the role
+        // that the summary scores have in `search`. Medoids are prefetched and scored six at a
+        // time with the batched kernel, as the documents of a block are in
+        // `evaluate_posting_block`: the scores are the ones of the single-vector kernel.
+        let mut distances: Vec<DotProduct> = Vec::with_capacity(n_blocks);
+        let (groups, rest) = self.medoid_postings.as_chunks::<6>();
+        for group in groups {
+            for medoid in group {
+                forward_index.prefetch_with_range(medoid.unpack());
             }
-            dists
-        };
-
-        // Scan: prune by medoid score, then evaluate non-medoid docs.
-        for (block_id, medoid_dist) in distances.into_iter().enumerate() {
-            if heap.len() == k
-                && medoid_dist.distance() < heap_factor * heap.peek().distance.distance()
-            {
-                continue;
-            }
-            let medoid_range = self.medoid_postings[block_id].unpack();
-            if visited.insert(medoid_range.start) {
-                heap.push(ScoredRange {
-                    distance: medoid_dist,
-                    range: medoid_range,
-                });
-            }
-            let packed_posting_block = &self.packed_postings()
-                [self.block_offsets[block_id]..self.block_offsets[block_id + 1]];
-            self.evaluate_posting_block(
-                evaluator,
-                packed_posting_block,
-                heap,
-                visited,
-                forward_index,
-            );
+            distances.extend(evaluator.compute_distances_batch6(std::array::from_fn(|i| {
+                forward_index.get_with_range(group[i].unpack())
+            })));
         }
+        for medoid in rest {
+            forward_index.prefetch_with_range(medoid.unpack());
+        }
+        for medoid in rest {
+            distances
+                .push(evaluator.compute_distance(forward_index.get_with_range(medoid.unpack())));
+        }
+
+        // Blocks are pruned by the score of their medoid, in the order they are stored. The scan
+        // is the one of `search`: with a full heap the threshold is taken once and the scores
+        // are filtered one chunk at a time, and the survivors are checked again against the
+        // live threshold. See there for why the blocks that get evaluated are the same.
+        if heap.len() == k {
+            let snapshot = heap_factor * heap.peek().distance.distance();
+
+            const CHUNK: usize = 64;
+            for (c, chunk) in distances.chunks(CHUNK).enumerate() {
+                if chunk
+                    .iter()
+                    .fold(true, |acc, d| acc & (d.distance() < snapshot))
+                {
+                    continue;
+                }
+                for (i, &medoid_dist) in chunk.iter().enumerate() {
+                    if !(medoid_dist.distance() < snapshot) {
+                        self.visit_medoid_block_if_promising(
+                            c * CHUNK + i,
+                            medoid_dist,
+                            evaluator,
+                            k,
+                            heap_factor,
+                            heap,
+                            visited,
+                            forward_index,
+                        );
+                    }
+                }
+            }
+        } else {
+            for (block_id, medoid_dist) in distances.into_iter().enumerate() {
+                self.visit_medoid_block_if_promising(
+                    block_id,
+                    medoid_dist,
+                    evaluator,
+                    k,
+                    heap_factor,
+                    heap,
+                    visited,
+                    forward_index,
+                );
+            }
+        }
+    }
+
+    /// Medoid counterpart of `visit_block_if_promising`: block `block_id` is evaluated unless
+    /// the score of its medoid falls under the heap-factor threshold of the current top-k.
+    /// The medoid is a document of the block stored apart from the others, so it enters the
+    /// heap with the score it already has.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn visit_medoid_block_if_promising<'e, S>(
+        &self,
+        block_id: usize,
+        medoid_dist: DotProduct,
+        evaluator: &<EncoderFor<S> as VectorEncoder>::Evaluator<'e>,
+        k: usize,
+        heap_factor: f32,
+        heap: &mut KHeap<ScoredRange<DotProduct>>,
+        visited: &mut FxHashSet<usize>,
+        forward_index: &'e S,
+    ) where
+        S: SeismicSearchDataset,
+    {
+        if heap.len() == k && medoid_dist.distance() < heap_factor * heap.peek().distance.distance()
+        {
+            return;
+        }
+        let medoid_range = self.medoid_postings[block_id].unpack();
+        if visited.insert(medoid_range.start) {
+            heap.push(ScoredRange {
+                distance: medoid_dist,
+                range: medoid_range,
+            });
+        }
+        let packed_posting_block =
+            &self.packed_postings()[self.block_offsets[block_id]..self.block_offsets[block_id + 1]];
+        self.evaluate_posting_block(
+            evaluator,
+            packed_posting_block,
+            heap,
+            visited,
+            forward_index,
+        );
     }
 
     fn fixed_size_blocking(posting_list: &[usize], block_size: usize) -> Vec<usize> {
