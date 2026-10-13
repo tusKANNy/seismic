@@ -77,7 +77,7 @@ build =         true        # Whether to build the index (false if index already
 delete =        false       # Whether to remove index files after use to save disk space
 metric =        "RR@10"     # Evaluation metric to compute
 component-type = "u16"      # Component type for sparse vector indices
-value-type =     "f16"      # Value type for sparse vector values (options: "f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte")
+value-type =     "f16"      # Value type for sparse vector values (options: "f16", "bf16", "f32", "fixedu8", "fixedu16", or a compressed format, see below)
 # value-type =   "fixedu8"  # Example: use 8-bit fixed-point quantization
 # value-type =   "fixedu16" # Example: use 16-bit fixed-point quantization
 # NUMA =        "numactl --physcpubind='0-15' --localalloc"  # NUMA configuration
@@ -100,6 +100,10 @@ value-type =     "f16"      # Value type for sparse vector values (options: "f16
   - `"f32"`: IEEE 754 single-precision (32-bit) floating point - highest precision but slower
   - `"fixedu8"`: 8-bit fixed-point quantization (Q0.8) - very compact, lowest memory usage, may reduce accuracy
   - `"fixedu16"`: 16-bit fixed-point quantization (Q0.16) - compact, higher accuracy than fixedu8, lower memory than floats
+  - Compressed formats, each available only for the `component-type` listed (see [RustUsage.md](RustUsage.md#building-the-index) for what each one stores):
+    - `"dotvbyte"`, `"dotvbyte-scalar"`: `"u16"` or `"u32"`
+    - `"dotvbyte-optimistic"`, `"dotvbyte-optimistic-scalar"`, `"dotpacking8-optimistic-scalar"`: `"u32"` only
+    - `"dotpacking8-fixedu8"`, `"dotpacking8-scalar"`, `"dotpacking8-sparse-scalar"`, `"dotpacking8-scalar4bit"`, `"dotpacking8-centroid4bit"`, `"dotpacking8-f16"`, `"dotpackingsparse-f16"`, `"blocked-sparse"`, `"packed-centroid"`, `"packed-variable-uniform"`: `"u16"` only
 
   - **Recommendation**: Use `"f16"` for optimal balance of speed, memory efficiency, and accuracy. Use `"fixedu8"` for maximum memory savings when some loss in accuracy is acceptable.
 - `NUMA`: Optional NUMA (Non-Uniform Memory Access) configuration string for performance optimization
@@ -155,6 +159,7 @@ Parameters controlling how the search index is built:
 n-postings =            4000        # Target number of postings per posting list
 centroid-fraction =     0.1         # Fraction of posting list length used for centroids
 summary-energy =        0.4         # Fraction of energy preserved in summaries
+# summarization-strategy = "medoid" # How blocks are summarized: "energy-preserving" (default) or "medoid"
 knn =                   0           # Number of k-NN neighbors (0 = disabled)
 clustering-algorithm =  "random-kmeans"  # Clustering algorithm choice
 kmeans-doc-cut =        15          # Document cut parameter for kmeans variants
@@ -171,7 +176,11 @@ alpha =                 0.2                 # coi-threshold parameter: fraction 
 **Core Parameters:**
 - `n-postings`: Target average number of postings (document IDs) per posting list. Higher values = more memory, potentially better accuracy
 - `centroid-fraction`: Controls number of cluster centroids as a fraction of posting list length (0.0-1.0)
-- `summary-energy`: Fraction of total energy preserved in document summaries (0.0-1.0). Higher = better accuracy, more memory
+- `summary-energy`: Fraction of total energy preserved in document summaries (0.0-1.0). Higher = better accuracy, more memory. Used by the `"energy-preserving"` summarization only; it can be omitted with the other strategies
+- `summarization-strategy`: How each block of a posting list is summarized for pruning at query time. Optional, default `"energy-preserving"`
+  - `"energy-preserving"`: summary made of the largest components of the block, up to `summary-energy`
+  - `"medoid"`: no summary; the document of the block closest to its centroid (the medoid) is stored apart and scored in place of the summary. Less memory than a summary, no quantization error
+  - The `fixed-size` summarization of `build_inverted_index` is not reachable from the scripts, since they do not pass `--n-components`
 - `knn`: Number of k-nearest neighbors to store per document (0 = disabled, >0 enables KNN enhancement)
 
 **Clustering Algorithm Options:**
@@ -250,6 +259,7 @@ n-postings =            [1000, 2000, 4000]    # Multiple values to test
 centroid-fraction =     [0.1]                 # Single value (no sweep)
 summary-energy =        [0.4, 0.5]            # Two values to test
 clustering-algorithm =  ["random-kmeans"]     # String arrays supported
+# summarization-strategy = ["medoid"]         # Summarization sweep (summary-energy is ignored by "medoid")
 
 [querying_parameters]
 query-cut =             [1, 2, 3, 4, 5]       # Query cut sweep
