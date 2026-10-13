@@ -93,6 +93,7 @@ impl Default for BlockingStrategy {
 pub enum SummarizationStrategy {
     FixedSize { n_components: usize },
     EnergyPreserving { summary_energy: f32 },
+    Medoid,
 }
 
 impl Default for SummarizationStrategy {

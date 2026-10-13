@@ -1,4 +1,4 @@
-name = "splade-v3_recall_99"
+name = "splade-v3-mem_budget_1.25-recall_99"
 title = "Seismic Splade-v3 - Recall 99%"
 description = "Optimized configuration for splade-v3 targeting recall 99% from grid search"
 dataset = "Splade-v3 on MS-MARCO"

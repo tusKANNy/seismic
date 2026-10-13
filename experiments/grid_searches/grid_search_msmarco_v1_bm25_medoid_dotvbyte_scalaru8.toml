@@ -1,0 +1,48 @@
+name =          "grid_search_msmarco_v1_bm25_medoid_dotvbyte_scalaru8"
+title =         "Seismic Medoid with dotvbyte_u32_scalaru8 on BM25 MS MARCO"
+description =   "Seismic Medoid with dotvbyte_u32_scalaru8 on BM25 MS MARCO"
+dataset =       "BM25 on MS-MARCO"
+# compile-command = "cargo build" # Compile in debug mode? default is release mode
+# build-command = "./target/release/build_inverted_index"
+# query-command = "./target/debug/perf_inverted_index"
+
+[settings]
+k =             10
+n-runs =        1       # Number of runs. PLEASE think carefully how increasing
+                        # this may influence your query time
+#NUMA =          "numactl --physcpubind='0' --localalloc"    # Is the machine NUMA and need to prepend "numactl --physcpubind='0-15' --localalloc" to query command? Otherwise comment this!
+build =         true   # Need to build the index or the index is already built?
+metric =        "RR@10"
+delete =        true
+
+[folder]
+data =          "~/knn_datasets/sparse_datasets/msmarco_v1_passage/bm25_msmarco/data"
+index =         "~/knn_indexes/sparse_datasets/msmarco_v1_passage/bm25_msmarco/indexes"
+qrels_path =    "~/knn_datasets/sparse_datasets/msmarco_v1_passage/qrels.dev.small.tsv"
+experiment =    "./grid_medoid_bm25_dotvbyte_scalaru8"     # stdout and stderr here of running the experiment is saved here. in a specific subfolder for the current execution
+
+[filename]
+dataset =       "documents.bin"
+queries =       "queries.bin"
+groundtruth =   "groundtruth.tsv"
+doc_ids =       "doc_ids.npy"
+query_ids =     "queries_ids.npy"
+index =         "seismic_index"
+
+[indexing_parameters]
+n-postings =            [1000, 2000, 3000]
+centroid-fraction =     [0.05, 0.1, 0.2]
+summarization-strategy = ["medoid"] # FIX
+knn =                   [0] # FIX
+pruning-strategy =      ["global-threshold"] # FIX
+max-fraction =          [2.0, 3.0, 4.0, 6.0]
+clustering-algorithm =  ["random-kmeans-inverted-index-approx"] # FIX
+kmeans-doc-cut =        [15]   # FIX
+value-type =            ["dotvbyte-scalar"] # FIX
+component-type =        ["u32"] # FIX
+min-cluster-size =      [10]
+
+[querying_parameters]
+query-cut =             [1, 2, 3, 4, 5, 6]
+heap-factor =           [0.4, 0.5, 0.6, 0.7, 0.8]
+knn =                   [0] # FIX

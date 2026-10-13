@@ -24,7 +24,12 @@ Seismic has several parameters that control the space/time trade-offs when build
 - `-i, --input-file` path to the source collection file (`documents.bin`).
 - `-o, --output-file` output index base path; the binary appends `.index.seismic`.
 - `-n, --n-postings` defines the posting list size, representing the average number of postings stored per list (default: 6000).
-- `-s, --summary-energy` controls the summary size, preserving a fraction of the overall energy for each summary (default: 0.5).
+- `--summarization-strategy` selects how each block is summarized for pruning at query time. Options: `energy-preserving` (default), `medoid`, `fixed-size`.
+  - `energy-preserving`: the summary of a block keeps the largest components up to a fraction `--summary-energy` of the block energy.
+  - `medoid`: no summary is built; the document of the block closest to the block centroid (its medoid) is stored apart from the rest of the block and scored against the query in place of a summary. Uses less space than a summary, with no quantization error (the medoid is a real document, so it is also returned with its exact score).
+  - `fixed-size`: the summary keeps the `--n-components` largest components of the block.
+- `-s, --summary-energy` controls the summary size for `energy-preserving`, preserving a fraction of the overall energy for each summary (default: 0.5).
+- `--n-components` number of components of each summary for `fixed-size` (default: 0).
 - `--centroid-fraction` determines the number of centroids per posting list, capped at a fraction of the posting list length (default: 0.1).
 - `--clustering-algorithm` selects the algorithm to cluster postings within each posting list. Options: `random-kmeans`, `random-kmeans-inverted-index`, `random-kmeans-inverted-index-approx`.
 - `--pruning-strategy` selects the posting list pruning strategy. Options: `global-threshold`, `coi-threshold`, `fixed-size`.
@@ -37,7 +42,13 @@ Seismic has several parameters that control the space/time trade-offs when build
 - `--knn` number of neighbors stored per vector for the k-NN graph (default: 0, i.e., disabled).
 - `--knn-path` path to a precomputed nearest-neighbor file.
 - `--component-type` component type: `u16` (default) or `u32` for large vocabularies.
-- `-v, --value-type` value type: `f16` (default), `bf16`, `f32`, `fixedu8`, `fixedu16`, or `dotvbyte`.
+- `-v, --value-type` value type: `f16` (default), `bf16`, `f32`, `fixedu8`, `fixedu16`, or one of the compressed formats below. The index is built with plain `f32` values and converted to the chosen format at the end, so every format accepts the same build parameters. Compressed formats are available only for the component types listed; `perf_inverted_index` must be run with the same `--component-type` and `--value-type` used to build the index.
+  - `dotvbyte`, `dotvbyte-scalar`: VByte-compressed components with 8-bit fixed-point (`dotvbyte`) or scalar-quantized (`dotvbyte-scalar`) values. `u16` and `u32`.
+  - `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar`: `u32` variants of the two above that keep the `u16` fast path for most vectors, inserting zero-valued padding coordinates for the rare component gaps that do not fit in 16 bits.
+  - `dotpacking8-fixedu8`, `dotpacking8-scalar`, `dotpacking8-sparse-scalar`, `dotpacking8-scalar4bit`, `dotpacking8-centroid4bit`, `dotpacking8-f16`, `dotpackingsparse-f16`: the `dotpacking` component codec (components permuted and gap-coded in a single variable-bit stream) with the values stored as the suffix says: 8-bit fixed point, scalar-quantized `u8`, 4-bit scalar, 4-bit per-component centroids, or `f16`. `u16` only.
+  - `dotpacking8-optimistic-scalar`: `u32` variant of `dotpacking8-scalar`, optimistic as `dotvbyte-optimistic`. `u32` only.
+  - `blocked-sparse`: vectors packed in 64-byte, cache-line-aligned blocks with `f16` values. `u16` only.
+  - `packed-centroid`, `packed-variable-uniform`: 4-bit codes packed as nibbles, quantized per component with 16 centroids learned by k-means (`packed-centroid`) or uniformly (`packed-variable-uniform`). `u16` only. The quantizers are trained during the conversion with the settings hard-coded at the top of `build_inverted_index.rs`.
 
 For **Splade on MS MARCO**, good choices are:
 ```
@@ -159,7 +170,7 @@ assert_eq!(result[0].1, 1);
 ### Configuration Parameters
 Key parameters to experiment with:
 - `n_postings` (`PruningStrategy::GlobalThreshold`) defines the posting list size.
-- `summary_energy` (`SummarizationStrategy::EnergyPreserving`) controls summary size.
+- `summary_energy` (`SummarizationStrategy::EnergyPreserving`) controls summary size; `SummarizationStrategy::Medoid` replaces the summaries with the medoid of each block, and `SummarizationStrategy::FixedSize` keeps `n_components` per summary.
 - `centroid_fraction` (`BlockingStrategy::RandomKmeans`) sets centroids per posting list.
 
 For serialization/deserialization examples, see:

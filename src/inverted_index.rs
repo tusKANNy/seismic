@@ -110,18 +110,21 @@ where
         let forward = SpaceUsage::space_usage_bytes(&self.forward_index);
         println!("\tForward Index: {:} Bytes", forward);
 
-        // Breakdown dettagliato delle posting lists
         let mut total_packed_postings = 0;
         let mut total_block_offsets = 0;
         let mut total_summaries = 0;
+        let mut total_medoid_postings = 0;
 
         for posting_list in self.posting_lists.iter() {
             total_packed_postings += SpaceUsage::space_usage_bytes(posting_list.packed_postings());
             total_block_offsets += SpaceUsage::space_usage_bytes(posting_list.block_offsets());
-            total_summaries += posting_list.summaries().space_usage_bytes();
+            total_summaries += posting_list.summaries_space_bytes();
+            total_medoid_postings +=
+                posting_list.medoid_postings().len() * std::mem::size_of::<u64>();
         }
 
-        let postings_total = total_packed_postings + total_block_offsets + total_summaries;
+        let postings_total =
+            total_packed_postings + total_block_offsets + total_summaries + total_medoid_postings;
 
         println!("\tPosting Lists: {:} Bytes", postings_total);
         println!(
@@ -135,9 +138,14 @@ where
             total_block_offsets as f64 / postings_total as f64 * 100.0
         );
         println!(
-            "\t  └─ summaries: {:} Bytes ({:.2}%)",
+            "\t  ├─ summaries: {:} Bytes ({:.2}%)",
             total_summaries,
             total_summaries as f64 / postings_total as f64 * 100.0
+        );
+        println!(
+            "\t  └─ medoid_postings: {:} Bytes ({:.2}%)",
+            total_medoid_postings,
+            total_medoid_postings as f64 / postings_total as f64 * 100.0
         );
 
         let knn_size = match &self.knn {
@@ -263,6 +271,9 @@ where
 
         for posting in posting_lists.iter_mut() {
             for pack in posting.packed_postings_mut().iter_mut() {
+                *pack = packs_map[pack];
+            }
+            for pack in posting.medoid_postings_mut().iter_mut() {
                 *pack = packs_map[pack];
             }
         }
@@ -1243,6 +1254,162 @@ mod tests {
             for pair in list.windows(2) {
                 assert!(pair[0].0 > pair[1].0 || (pair[0].0 == pair[1].0 && pair[0].1 < pair[1].1));
             }
+        }
+    }
+
+    // With medoid summarization the medoid of each block is stored apart from the other docs
+    // of the block: `get_doc_ids_in_postings` must return both.
+    #[test]
+    fn test_get_doc_ids_in_postings_includes_medoids() {
+        const DIM: usize = 6;
+        const N_DOCS: usize = 20;
+        let has_component =
+            |doc_id: usize, component: usize| !(doc_id + component).is_multiple_of(3);
+
+        let blocking_strategies = [
+            BlockingStrategy::FixedSize { block_size: 4 },
+            BlockingStrategy::default(),
+        ];
+        let summarization_strategies = [
+            SummarizationStrategy::Medoid,
+            SummarizationStrategy::default(),
+        ];
+
+        for blocking in blocking_strategies {
+            for summarization in summarization_strategies {
+                let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(DIM, DIM);
+                let mut dataset = PlainSparseDatasetGrowable::new(quantizer);
+                for doc_id in 0..N_DOCS {
+                    let components: Vec<u16> = (0..DIM)
+                        .filter(|&c| has_component(doc_id, c))
+                        .map(|c| c as u16)
+                        .collect();
+                    let values: Vec<f32> = components
+                        .iter()
+                        .map(|&c| 1.0 + ((doc_id * (c as usize + 1)) % 5) as f32)
+                        .collect();
+                    dataset.push(SparseVectorView::new(
+                        components.as_slice(),
+                        values.as_slice(),
+                    ));
+                }
+                let dataset: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
+
+                // Large enough to keep every posting, so each list holds all the docs with
+                // that component.
+                let config = Configuration::default()
+                    .pruning_strategy(PruningStrategy::FixedSize { n_postings: N_DOCS })
+                    .blocking_strategy(blocking)
+                    .summarization_strategy(summarization);
+                let index = InvertedIndexBase::build(dataset, config);
+
+                for component in 0..DIM {
+                    let mut doc_ids = index.get_doc_ids_in_postings(component);
+                    doc_ids.sort_unstable();
+                    let expected: Vec<usize> = (0..N_DOCS)
+                        .filter(|&doc_id| has_component(doc_id, component))
+                        .collect();
+                    assert_eq!(
+                        doc_ids, expected,
+                        "list {component}, {blocking:?}, {summarization:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // With a heap factor of 0 no block is pruned, so a medoid index that keeps every posting
+    // and visits every list of the query must return the exact top-k. The test is built so
+    // that the top-k holds every doc of a list visited with a full heap, and the lists are
+    // long enough to go through all the paths of the medoid scan: groups of six medoids plus
+    // a remainder, and more than one chunk of blocks.
+    #[test]
+    fn test_medoid_search_without_pruning_is_exact() {
+        const DIM: usize = 8;
+        const N_WEAK_DOCS: usize = 600;
+        const N_DOCS: usize = 1600;
+        const K: usize = 600;
+
+        let mut state = 42_u64;
+        let mut docs: Vec<(Vec<u16>, Vec<f32>)> = Vec::with_capacity(N_DOCS);
+        // The weak docs only have component 0, the other docs never have it. The queries pair
+        // component 0, with the largest weight, with one other component: the list of
+        // component 0 is visited first and fills the heap with the weak docs, which score
+        // less than any doc of the second list. The second list is shorter than k, so all of
+        // its docs must be returned.
+        for _ in 0..N_WEAK_DOCS {
+            docs.push((vec![0], vec![1.0]));
+        }
+        for _ in N_WEAK_DOCS..N_DOCS {
+            let components: Vec<u16> = (1..DIM as u16)
+                .filter(|_| lcg(&mut state).is_multiple_of(2))
+                .collect();
+            let values: Vec<f32> = components
+                .iter()
+                .map(|_| 10.0 + (lcg(&mut state) % 50) as f32)
+                .collect();
+            docs.push((components, values));
+        }
+
+        let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(DIM, DIM);
+        let mut dataset = PlainSparseDatasetGrowable::new(quantizer);
+        for (components, values) in &docs {
+            dataset.push(SparseVectorView::new(
+                components.as_slice(),
+                values.as_slice(),
+            ));
+        }
+        let dataset: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
+
+        let config = Configuration::default()
+            .pruning_strategy(PruningStrategy::FixedSize { n_postings: N_DOCS })
+            .blocking_strategy(BlockingStrategy::FixedSize { block_size: 4 })
+            .summarization_strategy(SummarizationStrategy::Medoid);
+        let index = InvertedIndexBase::build(dataset, config);
+
+        for component in 1..DIM as u16 {
+            let query_components = [0, component];
+            let query_values = [9.0, 1.0 + (lcg(&mut state) % 8) as f32];
+
+            // Each doc shares at most one component with the query, and the values are small
+            // integers: the scores are exact and can be compared with `==`.
+            let weight = |c: u16| match query_components.iter().position(|&q| q == c) {
+                Some(i) => query_values[i],
+                None => 0.0,
+            };
+            let doc_scores: Vec<f32> = docs
+                .iter()
+                .map(|(components, values)| {
+                    let terms = components.iter().zip(values);
+                    terms.map(|(&c, &v)| weight(c) * v).sum()
+                })
+                .collect();
+            let mut expected = doc_scores.clone();
+            expected.sort_unstable_by(|a, b| b.total_cmp(a));
+            expected.truncate(K);
+            // The second list holds more than one chunk of blocks, and fits in the top-k.
+            let list_len = doc_scores.iter().filter(|&&s| s > query_values[0]).count();
+            assert!(64 * 4 < list_len && list_len < K);
+
+            let query = SparseVectorView::new(query_components.as_slice(), query_values.as_slice());
+            let results = index.search(query, K, 2, 0.0, 0, false);
+
+            // Each doc comes with its own score, medoids included...
+            for scored in &results {
+                assert_eq!(
+                    scored.distance.distance(),
+                    doc_scores[scored.vector as usize],
+                    "component {component}, doc {}",
+                    scored.vector
+                );
+            }
+            // ...and the scores are the k best ones.
+            let mut scores: Vec<f32> = results
+                .iter()
+                .map(|scored| scored.distance.distance())
+                .collect();
+            scores.sort_unstable_by(|a, b| b.total_cmp(a));
+            assert_eq!(scores, expected, "component {component}");
         }
     }
 }
