@@ -128,14 +128,46 @@ def build_index(configs, experiment_dir):
     return build_base_index(configs, experiment_dir, build_command=build_command)
 
 
-def append_value_type(command_and_params, configs):
-    value_type = configs['indexing_parameters']["value-type"]
-    valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte", "dotvbyte-scalar", "dotvbyte-optimistic", "dotvbyte-optimistic-scalar", "dotpacking8-fixedu8", "dotpacking8-scalar", "dotpacking8-sparse-scalar", "dotpacking8-scalar4bit", "dotpacking8-centroid4bit", "dotpacking8-optimistic-scalar", "dotpacking8-f16", "dotpackingsparse-f16", "blocked-sparse"}
-    if value_type not in valid_value_types:
-        print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(valid_value_types)}", "red"))
-        sys.exit(1)
+# Value types accepted by build_inverted_index / perf_inverted_index; keep in sync with
+# VALUE_TYPES in src/value_types.rs (which also lists the component types each one supports).
+VALUE_TYPES = [
+    "f32", "f16", "bf16", "fixedu8", "fixedu16", "scalaru8", "scalaru16",
+    "blocked-sparse", "blocked-sparse-scalaru8", "blocked-sparse-scalaru16",
+    "dotpacking8-fixedu8", "dotpacking8-scalaru8", "dotpacking8-scalaru16",
+    "dotpacking8-f16", "dotpacking8-scalar4bit",
+    "dotpacking8-scalar",  # former name of dotpacking8-scalaru8
+]
 
-    command_and_params.append(f"--value-type {value_type}")
+# Value types removed together with their encoders in vectorium 0.10, and what to use instead.
+REMOVED_VALUE_TYPES = {
+    "dotvbyte": "dotpacking8-scalaru8",
+    "dotvbyte-scalar": "dotpacking8-scalaru8",
+    "dotvbyte-optimistic": "dotpacking8-scalaru8 with component-type u32",
+    "dotvbyte-optimistic-scalar": "dotpacking8-scalaru8 with component-type u32",
+    "dotpacking8-optimistic-scalar": "dotpacking8-scalaru8 with component-type u32",
+    "dotpacking8-sparse-scalar": "dotpacking8-scalaru8",
+    "dotpacking8-centroid4bit": "dotpacking8-scalar4bit",
+    "dotpackingsparse-f16": "dotpacking8-f16",
+    "packed-centroid": "dotpacking8-scalar4bit",
+    "packed-variable-uniform": "dotpacking8-scalar4bit",
+}
+
+
+def checked_value_type(configs):
+    """Return the configured value-type, exiting with an error if it is not supported."""
+    value_type = configs['indexing_parameters']["value-type"]
+    if value_type in REMOVED_VALUE_TYPES:
+        print(colored(f"ERROR: value-type '{value_type}' was removed in vectorium 0.10. "
+                      f"Use '{REMOVED_VALUE_TYPES[value_type]}' instead.", "red"))
+        sys.exit(1)
+    if value_type not in VALUE_TYPES:
+        print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(VALUE_TYPES)}", "red"))
+        sys.exit(1)
+    return value_type
+
+
+def append_value_type(command_and_params, configs):
+    command_and_params.append(f"--value-type {checked_value_type(configs)}")
 
 
 
@@ -372,12 +404,7 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, inde
         command_and_params.append(f"--component-type {component_type}")
 
     if configs['indexing_parameters'].get("value-type", None):
-        value_type = configs['indexing_parameters']["value-type"]
-        valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte", "dotvbyte-scalar", "dotvbyte-optimistic", "dotvbyte-optimistic-scalar", "dotpacking8-fixedu8", "dotpacking8-scalar", "dotpacking8-sparse-scalar", "dotpacking8-scalar4bit", "dotpacking8-centroid4bit", "dotpacking8-optimistic-scalar", "dotpacking8-f16", "dotpackingsparse-f16", "blocked-sparse"}
-        if value_type not in valid_value_types:
-            print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(valid_value_types)}", "red"))
-            sys.exit(1)
-        command_and_params.append(f"--value-type {value_type}")
+        append_value_type(command_and_params, configs)
 
     command = " ".join(command_and_params)
 

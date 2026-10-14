@@ -132,7 +132,7 @@ Besides `SeismicIndex`, Seismic exports several specialized classes:
 - **`SeismicIndexLV`** - For collections with large vocabularies (> 65,535 unique tokens). Uses `u32` component IDs instead of `u16`. Same API as `SeismicIndex`.
 - **`SeismicIndexRaw`** - Works with pre-converted binary data (Seismic inner format) instead of JSONL. Uses integer token IDs and binary query files. Useful for benchmarking and Rust-level experiments.
 - **`SeismicIndexRawLV`** - Large vocabulary variant of `SeismicIndexRaw`.
-- **`SeismicIndexDotVByte`** - Uses DotVByte compression for reduced memory usage. Same query API as `SeismicIndex`.
+- **`SeismicIndexDotPacking8`** - Uses DotPacking8 compression (8-bit values with one quantization step per component) for reduced memory usage. Same query API as `SeismicIndex`. It replaces `SeismicIndexDotVByte`; indexes saved with that class must be rebuilt.
 - **`SeismicDataset`** - Loads an in-memory dataset for brute-force exact search (no index). Useful for computing ground truth.
 - **`SeismicDatasetLV`** - Large vocabulary variant of `SeismicDataset`.
 

@@ -184,7 +184,7 @@ where
         );
 
         let query_for_eval: <EncoderFor<S> as VectorEncoder>::QueryVector<'q> = query.into();
-        let mut evaluator = self.forward_index.encoder().query_evaluator(query_for_eval);
+        let mut evaluator = self.forward_index.encoder().query_evaluator(query_for_eval, &());
 
         let mut heap = KHeap::new(k);
         // A query inspects ~2k postings at the operating points of interest (MSMARCOV1), so this covers
@@ -245,7 +245,7 @@ where
     /// Convert the `InvertedIndexBase`'s dataset to another one.
     pub fn convert_dataset_from<T>(inverted_index: InvertedIndexBase<T>) -> Self
     where
-        S: Dataset + SparseData + ConvertFrom<T>,
+        S: Dataset + SparseData + ConvertFrom<T, Config = ()>,
         T: Dataset + SparseData,
         EncoderFor<T>: SparseDataEncoder<OutputComponentType = ComponentFor<S>>,
     {
@@ -258,7 +258,7 @@ where
         let old_packs: Vec<_> = (0..forward_index.len())
             .map(|i| PackedPostingBlock::pack(forward_index.range_from_id(i as u64)))
             .collect();
-        let new_dataset = ConvertInto::<S>::convert_into(forward_index);
+        let new_dataset = ConvertInto::<S>::convert_into(forward_index, ());
         let new_packs: Vec<_> = (0..new_dataset.len())
             .map(|i| PackedPostingBlock::pack(new_dataset.range_from_id(i as u64)))
             .collect();
@@ -289,7 +289,7 @@ where
     /// Convert the `InvertedIndexBase`'s dataset to another one.
     pub fn convert_dataset_into<T>(self) -> InvertedIndexBase<T>
     where
-        T: Dataset + SparseData + ConvertFrom<S>,
+        T: Dataset + SparseData + ConvertFrom<S, Config = ()>,
         EncoderFor<T>: SparseDataEncoder<OutputComponentType = ComponentFor<S>>,
     {
         InvertedIndexBase::<T>::convert_dataset_from(self)
@@ -967,7 +967,7 @@ where
     /// Convenience function to build InvertedIndexBase using a dataset as a base, then converting it.
     pub fn from_base_dataset<T>(dataset: T, config: Configuration) -> Self
     where
-        S: ConvertFrom<T>,
+        S: ConvertFrom<T, Config = ()>,
         T: SeismicBuildDataset + SeismicSearchDataset,
         EncoderFor<T>: SparseVectorEncoder<OutputComponentType = ComponentFor<S>>,
         for<'a> <EncoderFor<T> as VectorEncoder>::QueryVector<'a>:

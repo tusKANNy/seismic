@@ -91,8 +91,7 @@ value-type =     "f16"      # Value type for sparse vector values (options: "f16
 - `component-type`: Data type for component indices in sparse vectors
   - `"u16"`: 16-bit unsigned integers (supports up to 65,535 unique components)
   - `"u32"`: 32-bit unsigned integers (supports up to 4+ billion unique components)
-  
-  - `"dotvbyte"`: DotVByte compressed format - variable-length encoding for reduced memory usage (works only if you have less than  65,535 different components)
+
   - **Recommendation**: Use `"u16"` for most datasets unless you have more than 65K vocabulary terms
 - `value-type`: Data type for storing vector values
   - `"f16"`: IEEE 754 half-precision (16-bit) floating point - **recommended for best performance**
@@ -100,10 +99,11 @@ value-type =     "f16"      # Value type for sparse vector values (options: "f16
   - `"f32"`: IEEE 754 single-precision (32-bit) floating point - highest precision but slower
   - `"fixedu8"`: 8-bit fixed-point quantization (Q0.8) - very compact, lowest memory usage, may reduce accuracy
   - `"fixedu16"`: 16-bit fixed-point quantization (Q0.16) - compact, higher accuracy than fixedu8, lower memory than floats
-  - Compressed formats, each available only for the `component-type` listed (see [RustUsage.md](RustUsage.md#building-the-index) for what each one stores):
-    - `"dotvbyte"`, `"dotvbyte-scalar"`: `"u16"` or `"u32"`
-    - `"dotvbyte-optimistic"`, `"dotvbyte-optimistic-scalar"`, `"dotpacking8-optimistic-scalar"`: `"u32"` only
-    - `"dotpacking8-fixedu8"`, `"dotpacking8-scalar"`, `"dotpacking8-sparse-scalar"`, `"dotpacking8-scalar4bit"`, `"dotpacking8-centroid4bit"`, `"dotpacking8-f16"`, `"dotpackingsparse-f16"`, `"blocked-sparse"`, `"packed-centroid"`, `"packed-variable-uniform"`: `"u16"` only
+  - `"scalaru8"`, `"scalaru16"`: 8/16-bit codes with one quantization step trained per component - `"u16"` or `"u32"`
+  - Packed formats, each available only for the `component-type` listed (see [RustUsage.md](RustUsage.md#building-the-index) for what each one stores):
+    - `"dotpacking8-scalaru8"`, `"dotpacking8-scalaru16"`: `"u16"` or `"u32"`
+    - `"dotpacking8-fixedu8"`, `"dotpacking8-f16"`, `"dotpacking8-scalar4bit"`, `"blocked-sparse"`, `"blocked-sparse-scalaru8"`, `"blocked-sparse-scalaru16"`: `"u16"` only
+  - `"dotvbyte"` and the other formats removed with vectorium 0.10 are rejected by `run_experiments.py` with the name of their replacement.
 
   - **Recommendation**: Use `"f16"` for optimal balance of speed, memory efficiency, and accuracy. Use `"fixedu8"` for maximum memory savings when some loss in accuracy is acceptable.
 - `NUMA`: Optional NUMA (Non-Uniform Memory Access) configuration string for performance optimization

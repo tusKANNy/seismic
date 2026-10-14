@@ -1,4 +1,4 @@
-/// Full-scan brute-force search on the raw dataset to check DotVByteScalarU8 encoding quality.
+/// Full-scan brute-force search on the raw dataset to check the quality of an encoding.
 ///
 /// Loads `documents.bin` directly, converts it to the target encoding, then does an exhaustive
 /// scan over all documents for each query. No inverted index is involved.
@@ -18,10 +18,14 @@ use clap::Parser;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
+use num_traits::FromPrimitive;
+use seismic::with_dataset_type;
+use vectorium::dataset::ConvertFrom;
 use vectorium::distances::DotProduct;
-use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
-use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
-use vectorium::{Dataset, Distance, PackedSparseDataset, PlainSparseDataset, read_seismic_format};
+use vectorium::{
+    ComponentType, Dataset, Distance, FlatIndex, Index, PlainSparseDataset, SparseVectorView,
+    VectorEncoder, read_seismic_format,
+};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -48,11 +52,16 @@ pub struct Args {
     #[arg(default_value_t = 10)]
     k: usize,
 
-    /// Encoding to apply to the dataset before searching.
-    /// `dotvbyte-scalar` = DotVByteScalarU8Encoder, `dotvbyte` = DotVByteFixedU8Encoder.
+    /// Encoding to apply to the dataset before searching: any value type of
+    /// `build_inverted_index` (see `seismic::value_types`).
     #[clap(short, long, value_parser)]
-    #[arg(default_value = "dotvbyte-scalar")]
+    #[arg(default_value = "dotpacking8-scalaru8")]
     value_type: String,
+
+    /// Component type (`u16` or `u32`).
+    #[clap(long, value_parser)]
+    #[arg(default_value = "u16")]
+    component_type: String,
 }
 
 fn pb_style() -> indicatif::ProgressStyle {
@@ -74,15 +83,19 @@ fn write_results(results: &[Vec<(f32, u64)>], output_path: &str) {
     println!("Results written to {output_path}");
 }
 
-pub fn main() {
-    let args = Args::parse();
-
+fn full_scan<C, S>(args: &Args)
+where
+    C: ComponentType + FromPrimitive,
+    S: Dataset + ConvertFrom<PlainSparseDataset<C, f32, DotProduct>, Config = ()> + Sync,
+    S::Encoder: VectorEncoder<Distance = DotProduct, QueryParams = ()>,
+    for<'a> <S::Encoder as VectorEncoder>::QueryVector<'a>: From<SparseVectorView<'a, C, f32>>,
+{
     println!("Loading dataset...");
-    let dataset_f32: PlainSparseDataset<u16, f32, DotProduct> =
+    let dataset_f32: PlainSparseDataset<C, f32, DotProduct> =
         read_seismic_format(&args.input_file).expect("failed to read dataset");
 
     println!("Loading queries...");
-    let queries: PlainSparseDataset<u16, f32, DotProduct> =
+    let queries: PlainSparseDataset<C, f32, DotProduct> =
         read_seismic_format(&args.query_file).expect("failed to read queries");
 
     let n_queries = cmp::min(args.n_queries, queries.len());
@@ -92,56 +105,44 @@ pub fn main() {
     println!("Queries : {} (using {})", queries.len(), n_queries);
     println!("Encoding: {}", args.value_type);
 
-    match args.value_type.as_str() {
-        "dotvbyte-scalar" => {
-            println!("Converting dataset...");
-            let dataset: PackedSparseDataset<DotVByteScalarU8Encoder> = dataset_f32.into();
-            println!("Full-scan search (k={k})...");
-            let start = Instant::now();
-            let results: Vec<Vec<(f32, u64)>> = (0..n_queries)
-                .into_par_iter()
-                .progress_count(n_queries as u64)
-                .with_style(pb_style())
-                .map(|qi| {
-                    dataset
-                        .search(queries.get(qi as u64), k)
-                        .into_iter()
-                        .map(|s| (s.distance.distance(), s.vector))
-                        .collect()
-                })
-                .collect();
-            println!(
-                "Avg query time: {} µs",
-                start.elapsed().as_micros() / n_queries as u128
-            );
-            write_results(&results, &args.output_path);
-        }
-        "dotvbyte" => {
-            println!("Converting dataset...");
-            let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = dataset_f32.into();
-            println!("Full-scan search (k={k})...");
-            let start = Instant::now();
-            let results: Vec<Vec<(f32, u64)>> = (0..n_queries)
-                .into_par_iter()
-                .progress_count(n_queries as u64)
-                .with_style(pb_style())
-                .map(|qi| {
-                    dataset
-                        .search(queries.get(qi as u64), k)
-                        .into_iter()
-                        .map(|s| (s.distance.distance(), s.vector))
-                        .collect()
-                })
-                .collect();
-            println!(
-                "Avg query time: {} µs",
-                start.elapsed().as_micros() / n_queries as u128
-            );
-            write_results(&results, &args.output_path);
-        }
-        other => {
-            eprintln!("Error: value-type must be 'dotvbyte-scalar' or 'dotvbyte'. Got: '{other}'");
-            std::process::exit(1);
-        }
+    println!("Converting dataset...");
+    let index = FlatIndex::from(S::convert_from(dataset_f32, ()));
+    println!("Full-scan search (k={k})...");
+    let start = Instant::now();
+    let results: Vec<Vec<(f32, u64)>> = (0..n_queries)
+        .into_par_iter()
+        .progress_count(n_queries as u64)
+        .with_style(pb_style())
+        .map(|qi| {
+            index
+                .search(queries.get(qi as u64).into(), k, &())
+                .into_iter()
+                .map(|s| (s.distance.distance(), s.vector))
+                .collect()
+        })
+        .collect();
+    println!(
+        "Avg query time: {} µs",
+        start.elapsed().as_micros() / n_queries as u128
+    );
+    write_results(&results, &args.output_path);
+}
+
+pub fn main() {
+    let args = Args::parse();
+
+    macro_rules! full_scan {
+        ($C:ty, $T:ty, $route:ident) => {
+            full_scan::<$C, $T>(&args)
+        };
+    }
+
+    if let Err(msg) = with_dataset_type!(
+        args.component_type.as_str(),
+        args.value_type.as_str(),
+        full_scan
+    ) {
+        eprintln!("Error: {msg}");
+        std::process::exit(1);
     }
 }
