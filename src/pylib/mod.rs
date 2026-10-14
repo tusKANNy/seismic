@@ -8,7 +8,8 @@ use crate::SeismicIndex as Index;
 use half::f16;
 
 use indicatif::ParallelProgressIterator;
-use numpy::{PyArrayMethods, PyFixedUnicode, PyReadonlyArrayDyn};
+use numpy::{PyArrayMethods, PyFixedUnicode, PyReadonlyArray1, PyReadonlyArrayDyn};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use rayon::iter::{ParallelBridge, ParallelIterator};

@@ -133,7 +133,7 @@ Besides `SeismicIndex`, Seismic exports several specialized classes:
 - **`SeismicIndexRaw`** - Works with pre-converted binary data (Seismic inner format) instead of JSONL. Uses integer token IDs and binary query files. Useful for benchmarking and Rust-level experiments.
 - **`SeismicIndexRawLV`** - Large vocabulary variant of `SeismicIndexRaw`.
 - **`SeismicIndexDotVByte`** - Uses DotVByte compression for reduced memory usage. Same query API as `SeismicIndex`.
-- **`SeismicDataset`** - Loads an in-memory dataset for brute-force exact search (no index). Useful for computing ground truth.
+- **`SeismicDataset`** - In-memory dataset for brute-force exact search (no index) or as input to `SeismicIndex.build_from_dataset`. Useful for computing ground truth. Fill it with `add_document(doc_id, tokens, values)` one document at a time, or with `add_documents_by_id(doc_ids, components, values, offsets)`: integer component ids in CSR layout, one call per batch; it returns the number of rows appended, since empty rows are skipped (queries then address component `42` as `"42"`). Pass `dim=` to the constructor when the number of components is known, so the storage is never rebuilt.
 - **`SeismicDatasetLV`** - Large vocabulary variant of `SeismicDataset`.
 
 ## Utility Functions

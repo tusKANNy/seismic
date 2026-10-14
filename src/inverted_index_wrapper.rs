@@ -623,9 +623,16 @@ where
     <C as std::convert::TryFrom<usize>>::Error: std::fmt::Debug,
 {
     pub fn new() -> Self {
+        Self::with_dim(0)
+    }
+
+    /// Empty dataset over `dim` components. Knowing the dimension up front
+    /// (e.g. the tokenizer vocabulary size) avoids the storage rebuild that
+    /// `ensure_dim` does every time a larger component shows up.
+    pub fn with_dim(dim: usize) -> Self {
         let sparse_dataset = {
             let quantizer =
-                vectorium::PlainSparseQuantizer::<C, f16, vectorium::DotProduct>::new(0, 0);
+                vectorium::PlainSparseQuantizer::<C, f16, vectorium::DotProduct>::new(dim, dim);
             vectorium::PlainSparseDatasetGrowable::<C, f16, vectorium::DotProduct>::new(quantizer)
         };
         Self {
@@ -718,6 +725,90 @@ where
         ));
     }
 
+    /// Append a batch of documents given directly by component id, in CSR
+    /// layout: row `i` is `components[offsets[i]..offsets[i + 1]]` and the
+    /// matching `values`, with components strictly increasing. Ids are stored
+    /// as they are; the token map gets the identity entry `"42" -> 42` for each
+    /// new id, so string queries keep resolving. Rows without components are
+    /// skipped together with their id (they can never score); the returned
+    /// count is the number of rows actually appended. The whole batch is
+    /// validated before anything is pushed, so on `Err` the dataset is
+    /// unchanged. Not meant to be mixed with `add_document`, which assigns
+    /// ids by insertion order.
+    pub fn add_documents_by_id(
+        &mut self,
+        ids: Vec<String>,
+        components: &[usize],
+        values: &[f32],
+        offsets: &[usize],
+    ) -> Result<usize, String> {
+        if offsets.len() != ids.len() + 1 || offsets.first() != Some(&0) {
+            return Err(format!(
+                "expected {} offsets starting at 0, got {}",
+                ids.len() + 1,
+                offsets.len()
+            ));
+        }
+        if components.len() != values.len() || offsets.last() != Some(&components.len()) {
+            return Err(format!(
+                "{} components, {} values, offsets end at {:?}",
+                components.len(),
+                values.len(),
+                offsets.last()
+            ));
+        }
+        let dim = components.iter().max().map_or(0, |c| c + 1);
+        if dim > 0 && C::try_from(dim - 1).is_err() {
+            return Err(format!("component {} exceeds the component type", dim - 1));
+        }
+        // Validate every row before touching the dataset.
+        for (row, id) in offsets.windows(2).zip(ids.iter()) {
+            let (start, end) = (row[0], row[1]);
+            if start > end || end > components.len() {
+                return Err(format!("offsets are not non-decreasing at {}", start));
+            }
+            if !components[start..end].windows(2).all(|w| w[0] < w[1]) {
+                return Err(format!(
+                    "components of document {} are not strictly increasing",
+                    id
+                ));
+            }
+        }
+
+        self.ensure_dim(dim);
+
+        let mut new_ids: Vec<usize> = components.to_vec();
+        new_ids.sort_unstable();
+        new_ids.dedup();
+        for c in new_ids {
+            self.token_to_id_map.entry(c.to_string()).or_insert(c);
+        }
+
+        let mut inserted = 0;
+        for (row, id) in offsets.windows(2).zip(ids) {
+            let (start, end) = (row[0], row[1]);
+            if start == end {
+                continue;
+            }
+            let row_components: Vec<C> = components[start..end]
+                .iter()
+                .map(|&c| C::try_from(c).unwrap())
+                .collect();
+            let row_values: Vec<f16> = values[start..end]
+                .iter()
+                .map(|&v| f16::from_f32(v))
+                .collect();
+            self.sparse_dataset.push(SparseVectorView::new(
+                row_components.as_slice(),
+                row_values.as_slice(),
+            ));
+            self.document_mapping.push(id);
+            self.document_content.push(None);
+            inserted += 1;
+        }
+        Ok(inserted)
+    }
+
     pub fn search(
         &self,
         query_id: &str,
@@ -754,5 +845,78 @@ where
     pub fn get_doc_text(&self, doc_id: &str) -> Option<String> {
         let idx = self.document_mapping.iter().position(|id| id == doc_id)?;
         self.document_content[idx].clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ranked(results: &[SearchResult]) -> Vec<(String, f32)> {
+        results
+            .iter()
+            .map(|r| (r.doc_id.clone(), r.score))
+            .collect()
+    }
+
+    #[test]
+    fn add_documents_by_id_matches_add_document() {
+        let mut by_token = SeismicDataset::<u16>::new();
+        by_token.add_document("d0".into(), &["1".into(), "7".into()], &[0.5, 1.0], None);
+        by_token.add_document("d2".into(), &["3".into(), "7".into()], &[2.0, 0.25], None);
+
+        // Same two docs in one CSR call, plus an empty row ("d1") that is skipped.
+        let mut by_id = SeismicDataset::<u16>::with_dim(8);
+        let inserted = by_id
+            .add_documents_by_id(
+                vec!["d0".into(), "d1".into(), "d2".into()],
+                &[1, 7, 3, 7],
+                &[0.5, 1.0, 2.0, 0.25],
+                &[0, 2, 2, 4],
+            )
+            .unwrap();
+        assert_eq!(inserted, 2);
+        assert_eq!(by_id.len(), 2);
+
+        let query: Vec<String> = vec!["7".into(), "3".into()];
+        let expected = ranked(&by_token.search("q", &query, &[1.0, 1.0], 2));
+        let got = ranked(&by_id.search("q", &query, &[1.0, 1.0], 2));
+        assert_eq!(got, expected);
+        assert_eq!(got[0], ("d2".to_string(), 2.25));
+    }
+
+    #[test]
+    fn add_documents_by_id_rejects_bad_input() {
+        let mut dataset = SeismicDataset::<u16>::with_dim(8);
+        let id = || vec!["d0".to_string()];
+        // Unsorted row, offsets past the end, component beyond u16.
+        assert!(
+            dataset
+                .add_documents_by_id(id(), &[7, 3], &[1.0, 1.0], &[0, 2])
+                .is_err()
+        );
+        assert!(
+            dataset
+                .add_documents_by_id(id(), &[3], &[1.0], &[0, 2])
+                .is_err()
+        );
+        assert!(
+            dataset
+                .add_documents_by_id(id(), &[70_000], &[1.0], &[0, 1])
+                .is_err()
+        );
+        // A bad second row must not leave the first one inserted.
+        assert!(
+            dataset
+                .add_documents_by_id(
+                    vec!["d0".into(), "d1".into()],
+                    &[1, 7, 7, 3],
+                    &[1.0, 1.0, 1.0, 1.0],
+                    &[0, 2, 4],
+                )
+                .is_err()
+        );
+        assert_eq!(dataset.len(), 0);
+        assert!(dataset.token_to_id_map().is_empty());
     }
 }

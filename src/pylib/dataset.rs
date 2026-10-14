@@ -19,18 +19,80 @@ macro_rules! impl_seismic_dataset {
             /// Create a new, empty SeismicDataset.
             ///
             /// This method returns an empty dataset ready to be populated
-            /// with documents using `add_document()`.
+            /// with documents using `add_document()` or `add_documents_by_id()`.
+            ///
+            /// Args:
+            ///     dim (int, optional): Number of components, when known up front
+            ///         (e.g. the tokenizer vocabulary size for `add_documents_by_id()`).
+            ///         Otherwise the dataset grows as new components appear, rebuilding
+            ///         its storage each time.
             ///
             /// Returns:
             ///     SeismicDataset: A new, empty dataset instance.
             ///
             /// Example:
             ///     >>> dataset = seismic.SeismicDataset()
+            ///     >>> dataset = seismic.SeismicDataset(dim=30522)
             #[new]
-            fn new() -> Self {
+            #[pyo3(signature = (dim=0))]
+            fn new(dim: usize) -> Self {
                 $rust_name {
-                    dataset: crate::SeismicDataset::new(),
+                    dataset: crate::SeismicDataset::with_dim(dim),
                 }
+            }
+
+            /// Append a batch of documents given by integer component ids (CSR layout).
+            ///
+            /// Row `i` is `components[offsets[i]:offsets[i + 1]]` with the matching
+            /// `values`; components must be strictly increasing within a row. Ids are
+            /// used as they are, with no token strings: queries address component 42 as
+            /// `"42"`. Rows with no components are skipped together with their `doc_id`.
+            /// Much faster than one `add_document()` per row, and never rebuilds the
+            /// storage when the dataset was created with `dim`. Do not mix with
+            /// `add_document()`, which numbers tokens by insertion order.
+            ///
+            /// Args:
+            ///     doc_ids (list[str]): One identifier per row.
+            ///     components (ndarray[int64]): `[nnz]` component ids.
+            ///     values (ndarray[float32]): `[nnz]` values.
+            ///     offsets (ndarray[int64]): `[len(doc_ids) + 1]` row boundaries, starting at 0.
+            ///
+            /// Returns:
+            ///     int: Number of documents appended (rows with no components are
+            ///     not counted). On `ValueError` the dataset is left unchanged.
+            ///
+            /// Example:
+            ///     >>> dataset.add_documents_by_id(
+            ///     ...     ["d0", "d1"],
+            ///     ...     np.array([3, 7, 7], dtype=np.int64),
+            ///     ...     np.array([0.5, 1.0, 2.0], dtype=np.float32),
+            ///     ...     np.array([0, 2, 3], dtype=np.int64),
+            ///     ... )
+            #[pyo3(signature = (doc_ids, components, values, offsets))]
+            #[pyo3(text_signature = "(self, doc_ids, components, values, offsets)")]
+            pub fn add_documents_by_id(
+                &mut self,
+                doc_ids: Vec<String>,
+                components: PyReadonlyArray1<'_, i64>,
+                values: PyReadonlyArray1<'_, f32>,
+                offsets: PyReadonlyArray1<'_, i64>,
+            ) -> PyResult<usize> {
+                fn to_usize(name: &str, array: PyReadonlyArray1<'_, i64>) -> PyResult<Vec<usize>> {
+                    array
+                        .as_slice()?
+                        .iter()
+                        .map(|&x| {
+                            usize::try_from(x).map_err(|_| {
+                                PyValueError::new_err(format!("{} contains a negative entry", name))
+                            })
+                        })
+                        .collect()
+                }
+                let components = to_usize("components", components)?;
+                let offsets = to_usize("offsets", offsets)?;
+                self.dataset
+                    .add_documents_by_id(doc_ids, &components, values.as_slice()?, &offsets)
+                    .map_err(PyValueError::new_err)
             }
 
             /// Get the number of documents currently stored in the dataset.
