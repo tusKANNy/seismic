@@ -7,12 +7,21 @@ research-only encoders and adds DotPacking8, blocked and step-scalar sparse enco
 
 ### Breaking changes
 
-- **Removed value types.** `dotvbyte` and its variants, `dotpacking8-optimistic-scalar`,
-  `dotpacking8-sparse-scalar`, `dotpacking8-centroid4bit`, `dotpackingsparse-f16`,
-  `packed-centroid` and `packed-variable-uniform` are rejected by the binaries and by
-  `scripts/run_experiments.py`, with an error that names the replacement. Use
-  `dotpacking8-scalaru8` instead of `dotvbyte` (and `dotpacking8-scalaru8` with component type
-  `u32` instead of `dotpacking8-optimistic-scalar`).
+- **Removed value types.** The value type (`--value-type` of the binaries, `value-type` in the
+  experiment TOMLs) selects how an index stores its values. vectorium 0.10 deleted some encoders,
+  so these names are no longer accepted:
+
+  | Removed value type | Use instead |
+  |---|---|
+  | `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar` | `dotpacking8-scalaru8` |
+  | `dotpacking8-optimistic-scalar` | `dotpacking8-scalaru8` with component type `u32` |
+  | `dotpacking8-sparse-scalar`, `dotpacking8-centroid4bit`, `dotpackingsparse-f16`, `packed-centroid`, `packed-variable-uniform` | none (research-only encoders) |
+
+  There is no silent fallback: the binaries and `scripts/run_experiments.py` stop with an error
+  that names the replacement, e.g. `'dotvbyte': DotVByte was removed in vectorium 0.10; use
+  'dotpacking8-scalaru8' (u16 or u32 components)`. `dotpacking8-scalaru8` stores 8-bit codes with
+  one quantization step per component; against `dotvbyte` it is as fast or faster, uses 4–8% less
+  memory and has slightly higher recall.
 - **Python:** `SeismicIndexDotVByte` is renamed `SeismicIndexDotPacking8` (DotPacking8, 8-bit codes
   with one step per component).
 - **Indexes built with 0.5.x must be rebuilt.**
