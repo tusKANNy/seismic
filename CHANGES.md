@@ -23,7 +23,16 @@ research-only encoders and adds DotPacking8, blocked and step-scalar sparse enco
   one quantization step per component; against `dotvbyte` it is as fast or faster, uses 4–8% less
   memory and has slightly higher recall.
 - **Python:** `SeismicIndexDotVByte` is renamed `SeismicIndexDotPacking8` (DotPacking8, 8-bit codes
-  with one step per component).
+  with one step per component). The old name is kept as a placeholder whose `build`,
+  `build_from_dataset`, `load` and constructor raise a `RuntimeError` naming the replacement.
+- **Python: `get_seismic_string()` now returns `'U100'`** (was `'U30'`). NumPy truncates token
+  strings to the dtype width silently, so distinct tokens sharing their first 30 characters
+  (URLs, long words from word-level encoders) collapsed onto one seismic token and `add_document`
+  panicked with "Components must be given in strictly ascending order". Code that hardcodes
+  `dtype='U30'` instead of calling `get_seismic_string()` now fails with a dtype `TypeError`:
+  replace the literal with `get_seismic_string()`.
+- **Python: clear error on duplicate tokens.** `SeismicDataset.add_document` reports the document
+  id and the offending token instead of the sortedness assertion from vectorium.
 - **Indexes built with 0.5.x must be rebuilt.**
 - **Rust API:** the generic bounds follow vectorium 0.10. Encoders must have `QueryParams = ()`
   and conversions `Config = ()`.
@@ -51,8 +60,6 @@ in one place, `src/value_types.rs` (`VALUE_TYPES` and the `with_dataset_type!` m
 - The experiment configs that used `dotvbyte` now use `dotpacking8-scalaru8`.
 - `scripts/run_experiments.py` runs on Python 3.14 (it no longer uses `ir_measures.parse_measure`,
   broken there), and exits with code 1 when an experiment fails (it exited 0).
-- `experiments/vectorium_compression/` holds the before/after evaluation (`REPORT.md`) and smoke
-  configs covering every (component type, value type) pair.
 
 ### Performance (MS MARCO cocondenser, against 0.5.2)
 

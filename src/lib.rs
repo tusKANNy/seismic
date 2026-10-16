@@ -46,6 +46,7 @@ use {
     pylib::SeismicDatasetLV as PySeismicDatasetLV,
     pylib::SeismicIndex as PySeismicIndex,
     pylib::SeismicIndexDotPacking8,
+    pylib::SeismicIndexDotVByte,
     pylib::SeismicIndexLV as PySeismicIndexLV,
     pylib::SeismicIndexRaw,
     pylib::SeismicIndexRawLV,
@@ -66,6 +67,7 @@ fn seismic(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SeismicIndexRaw>()?;
     m.add_class::<SeismicIndexRawLV>()?;
     m.add_class::<SeismicIndexDotPacking8>()?;
+    m.add_class::<SeismicIndexDotVByte>()?;
     m.add_class::<PySeismicDataset>()?;
     m.add_class::<PySeismicDatasetLV>()?;
     Ok(())
