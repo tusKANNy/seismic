@@ -277,6 +277,16 @@ def build_base_index(configs, experiment_dir, build_command):
     print(colored(f"Index built successfully in {building_time} secs!", "yellow"))
     return building_time, output_file+".index.seismic"
 
+def parse_measure(metric):
+    """Parse a measure name such as 'RR@10' or 'AP'. Replaces ir_measures.parse_measure, which
+    fails on Python 3.14 (it uses the removed ast.Num, ir_measures <= 0.4.3)."""
+    name, _, cutoff = metric.partition("@")
+    measure = getattr(ir_measures, name.strip(), None)
+    if measure is None:
+        raise ValueError(f"unknown measure '{metric}'")
+    return measure @ int(cutoff) if cutoff else measure
+
+
 def compute_metric(configs, output_file, gt_file, metric):    
     qrels_path = configs['folder']['qrels_path']
     
@@ -312,8 +322,8 @@ def compute_metric(configs, output_file, gt_file, metric):
     gt_pd['query_id'] = gt_pd['query_id'].astype(df_qrels.query_id.dtype)
     res_pd['query_id'] = res_pd['query_id'].astype(df_qrels.query_id.dtype)
     
-    ir_metric = ir_measures.parse_measure(metric)
-    
+    ir_metric = parse_measure(metric)
+
     metric_val = ir_measures.calc_aggregate([ir_metric], df_qrels, res_pd)[ir_metric]
     metric_gt = ir_measures.calc_aggregate([ir_metric], df_qrels, gt_pd)[ir_metric]
     
@@ -630,7 +640,7 @@ def main(experiment_config_filename):
         import traceback
         print(colored("Full traceback:", "yellow"))
         traceback.print_exc()
-        
+        sys.exit(1)
 
 
 
