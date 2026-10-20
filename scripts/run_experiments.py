@@ -59,7 +59,7 @@ def compile_rust_code(configs, experiment_dir):
     print()
     print(colored("Compiling the Rust code", "green"))
     
-    compile_command = configs.get("compile-command", "RUSTFLAGS='-C target-cpu=native' cargo build --release")
+    compile_command = configs.get("compile-command", "RUSTFLAGS='-C target-cpu=native' cargo build --release --bin build_inverted_index --bin perf_inverted_index --bin dataset_space_usage --no-default-features")
 
     compilation_output_file = os.path.join(experiment_dir, "compiler.output")
 
@@ -128,14 +128,46 @@ def build_index(configs, experiment_dir):
     return build_base_index(configs, experiment_dir, build_command=build_command)
 
 
-def append_value_type(command_and_params, configs):
+# Value types accepted by build_inverted_index / perf_inverted_index; keep in sync with
+# VALUE_TYPES in src/value_types.rs (which also lists the component types each one supports).
+VALUE_TYPES = [
+    "f32", "f16", "bf16", "fixedu8", "fixedu16", "scalaru8", "scalaru16",
+    "blocked-sparse", "blocked-sparse-scalaru8", "blocked-sparse-scalaru16",
+    "dotpacking8-fixedu8", "dotpacking8-scalaru8", "dotpacking8-scalaru16",
+    "dotpacking8-f16", "dotpacking8-scalar4bit",
+    "dotpacking8-scalar",  # former name of dotpacking8-scalaru8
+]
+
+# Value types removed together with their encoders in vectorium 0.11, and what to use instead.
+REMOVED_VALUE_TYPES = {
+    "dotvbyte": "dotpacking8-scalaru8",
+    "dotvbyte-scalar": "dotpacking8-scalaru8",
+    "dotvbyte-optimistic": "dotpacking8-scalaru8 with component-type u32",
+    "dotvbyte-optimistic-scalar": "dotpacking8-scalaru8 with component-type u32",
+    "dotpacking8-optimistic-scalar": "dotpacking8-scalaru8 with component-type u32",
+    "dotpacking8-sparse-scalar": "dotpacking8-scalaru8",
+    "dotpacking8-centroid4bit": "dotpacking8-scalar4bit",
+    "dotpackingsparse-f16": "dotpacking8-f16",
+    "packed-centroid": "dotpacking8-scalar4bit",
+    "packed-variable-uniform": "dotpacking8-scalar4bit",
+}
+
+
+def checked_value_type(configs):
+    """Return the configured value-type, exiting with an error if it is not supported."""
     value_type = configs['indexing_parameters']["value-type"]
-    valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte"}
-    if value_type not in valid_value_types:
-        print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(valid_value_types)}", "red"))
+    if value_type in REMOVED_VALUE_TYPES:
+        print(colored(f"ERROR: value-type '{value_type}' was removed in vectorium 0.11. "
+                      f"Use '{REMOVED_VALUE_TYPES[value_type]}' instead.", "red"))
         sys.exit(1)
-    
-    command_and_params.append(f"--value-type {value_type}")
+    if value_type not in VALUE_TYPES:
+        print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(VALUE_TYPES)}", "red"))
+        sys.exit(1)
+    return value_type
+
+
+def append_value_type(command_and_params, configs):
+    command_and_params.append(f"--value-type {checked_value_type(configs)}")
 
 
 
@@ -161,7 +193,6 @@ def build_base_index(configs, experiment_dir, build_command):
         f"--input-file {input_file}",
         f"--output-file {output_file}",
         f"--n-postings {configs['indexing_parameters']['n-postings']}",
-        f"--summary-energy {configs['indexing_parameters']['summary-energy']}",
         f"--centroid-fraction {configs['indexing_parameters']['centroid-fraction']}",
         f"--knn {configs['indexing_parameters']['knn']}",
         f"--clustering-algorithm {configs['indexing_parameters']['clustering-algorithm']}",
@@ -171,6 +202,9 @@ def build_base_index(configs, experiment_dir, build_command):
         knn_path = os.path.join(configs['folder']['data'], configs['filename']['knn_path'])
         knn_path_arg = f"--knn-path {knn_path}"
         command_and_params.append(knn_path_arg)
+
+    if configs['indexing_parameters'].get('summary-energy', None):
+        command_and_params.append(f"--summary-energy {configs['indexing_parameters']['summary-energy']}")
 
     if configs['indexing_parameters'].get('kmeans-pruning-factor', None):
         kmeans_pruning_factor = configs['indexing_parameters']['kmeans-pruning-factor']
@@ -205,6 +239,10 @@ def build_base_index(configs, experiment_dir, build_command):
 
     pruning_strategy = configs['indexing_parameters'].get("pruning-strategy", "global-threshold")
     command_and_params.append(f"--pruning-strategy {pruning_strategy}")
+
+    if configs['indexing_parameters'].get("summarization-strategy", None):
+        summarization_strategy = configs['indexing_parameters']["summarization-strategy"]
+        command_and_params.append(f"--summarization-strategy {summarization_strategy}")
 
     command = ' '.join(command_and_params)
 
@@ -248,6 +286,16 @@ def load_run(run_file, queries_ids, doc_ids):
     return run_pd
 
 
+def parse_measure(metric):
+    """Parse a measure name such as 'RR@10' or 'AP'. Replaces ir_measures.parse_measure, which
+    fails on Python 3.14 (it uses the removed ast.Num, ir_measures <= 0.4.3)."""
+    name, _, cutoff = metric.partition("@")
+    measure = getattr(ir_measures, name.strip(), None)
+    if measure is None:
+        raise ValueError(f"unknown measure '{metric}'")
+    return measure @ int(cutoff) if cutoff else measure
+
+
 def compute_metric(configs, output_file, gt_file, metric):
     """Compute the IR metric of the run against the qrels.
 
@@ -278,8 +326,8 @@ def compute_metric(configs, output_file, gt_file, metric):
     res_pd['doc_id'] = res_pd['doc_id'].astype(df_qrels.doc_id.dtype)
     res_pd['query_id'] = res_pd['query_id'].astype(df_qrels.query_id.dtype)
     
-    ir_metric = ir_measures.parse_measure(metric)
-    
+    ir_metric = parse_measure(metric)
+
     metric_val = ir_measures.calc_aggregate([ir_metric], df_qrels, res_pd)[ir_metric]
     print(f"Metric of the run ({ir_metric}): {round(metric_val, 4)}")
 
@@ -329,16 +377,33 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, inde
 
     command_and_params = [
         configs['settings']['NUMA'] if "NUMA" in configs['settings'] else "",
-        query_command, 
+        query_command,
         f"--index-file {index_file}",
         f"-k {configs['settings']['k']}",
         f"--query-file {query_file}",
-        f"--query-cut {query_config['query-cut']}",
         f"--heap-factor {query_config['heap-factor']}",
         f"--n-runs {configs['settings']['n-runs']}",
         f"--output-path {output_file}",
-          
+
     ]
+
+    # Query pruning is either energy-preserving ('query-energy', the number of scanned
+    # components is chosen per query) or fixed ('query-cut'). Exactly one must be given.
+    has_query_energy = "query-energy" in query_config
+    has_query_cut = "query-cut" in query_config
+
+    if has_query_energy and has_query_cut:
+        print(colored("ERROR: 'query-energy' and 'query-cut' are mutually exclusive, but both are set. "
+                      "Keep 'query-energy' for energy-preserving pruning, or 'query-cut' for a fixed cut.", "red"))
+        sys.exit(1)
+
+    if has_query_energy:
+        command_and_params.append(f"--query-energy {query_config['query-energy']}")
+    elif has_query_cut:
+        command_and_params.append(f"--query-cut {query_config['query-cut']}")
+    else:
+        print(colored("ERROR: a query configuration must set either 'query-energy' or 'query-cut'.", "red"))
+        sys.exit(1)
 
     if "knn" in query_config:
         command_and_params.append(f"--n-knn {query_config['knn']}" )
@@ -357,12 +422,7 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, inde
         command_and_params.append(f"--component-type {component_type}")
 
     if configs['indexing_parameters'].get("value-type", None):
-        value_type = configs['indexing_parameters']["value-type"]
-        valid_value_types = {"f16", "bf16", "f32", "fixedu8", "fixedu16", "dotvbyte"}
-        if value_type not in valid_value_types:
-            print(colored(f"ERROR: Invalid value-type '{value_type}'. Valid options are: {', '.join(valid_value_types)}", "red"))
-            sys.exit(1)
-        command_and_params.append(f"--value-type {value_type}")
+        append_value_type(command_and_params, configs)
 
     command = " ".join(command_and_params)
 
@@ -600,7 +660,7 @@ def main(experiment_config_filename, no_gt=False):
         import traceback
         print(colored("Full traceback:", "yellow"))
         traceback.print_exc()
-        
+        sys.exit(1)
 
 
 

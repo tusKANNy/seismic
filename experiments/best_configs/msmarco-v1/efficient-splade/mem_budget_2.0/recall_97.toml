@@ -1,4 +1,4 @@
-name = "efficient-splade_recall_97"
+name = "efficient-splade-mem_budget_2.0-recall_97"
 title = "Seismic Efficient-splade - Recall 97%"
 description = "Optimized configuration for efficient-splade targeting recall 97% from grid search"
 dataset = "Efficient-splade on MS-MARCO"

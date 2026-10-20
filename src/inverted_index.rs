@@ -2,7 +2,7 @@ use crate::index_traits::{
     ComponentFor, EncoderFor, SeismicBuildDataset, SeismicSearchDataset, ValueFor,
 };
 use crate::posting_list::{PackedPostingBlock, PostingList};
-use crate::utils::KHeap;
+use crate::utils::{KHeap, energy_preserving_cut};
 
 use toolkit::{BitField, BitFieldGrowable};
 
@@ -26,6 +26,7 @@ use std::cmp;
 use mem_dbg::{MemSize, SizeFlags};
 use rustc_hash::FxHashSet;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use std::io::Result as IoResult;
@@ -109,18 +110,21 @@ where
         let forward = SpaceUsage::space_usage_bytes(&self.forward_index);
         println!("\tForward Index: {:} Bytes", forward);
 
-        // Breakdown dettagliato delle posting lists
         let mut total_packed_postings = 0;
         let mut total_block_offsets = 0;
         let mut total_summaries = 0;
+        let mut total_medoid_postings = 0;
 
         for posting_list in self.posting_lists.iter() {
             total_packed_postings += SpaceUsage::space_usage_bytes(posting_list.packed_postings());
             total_block_offsets += SpaceUsage::space_usage_bytes(posting_list.block_offsets());
-            total_summaries += posting_list.summaries().space_usage_bytes();
+            total_summaries += posting_list.summaries_space_bytes();
+            total_medoid_postings +=
+                posting_list.medoid_postings().len() * std::mem::size_of::<u64>();
         }
 
-        let postings_total = total_packed_postings + total_block_offsets + total_summaries;
+        let postings_total =
+            total_packed_postings + total_block_offsets + total_summaries + total_medoid_postings;
 
         println!("\tPosting Lists: {:} Bytes", postings_total);
         println!(
@@ -134,9 +138,14 @@ where
             total_block_offsets as f64 / postings_total as f64 * 100.0
         );
         println!(
-            "\t  └─ summaries: {:} Bytes ({:.2}%)",
+            "\t  ├─ summaries: {:} Bytes ({:.2}%)",
             total_summaries,
             total_summaries as f64 / postings_total as f64 * 100.0
+        );
+        println!(
+            "\t  └─ medoid_postings: {:} Bytes ({:.2}%)",
+            total_medoid_postings,
+            total_medoid_postings as f64 / postings_total as f64 * 100.0
         );
 
         let knn_size = match &self.knn {
@@ -175,13 +184,13 @@ where
         );
 
         let query_for_eval: <EncoderFor<S> as VectorEncoder>::QueryVector<'q> = query.into();
-        let mut evaluator = self.forward_index.encoder().query_evaluator(query_for_eval);
+        let mut evaluator = self.forward_index.encoder().query_evaluator(query_for_eval, &());
 
         let mut heap = KHeap::new(k);
-        let mut visited = FxHashSet::with_capacity_and_hasher(
-            query_cut.min(query_components.len()) * 5000,
-            Default::default(),
-        ); // TODO: 5000 should be n_postings
+        // A query inspects ~2k postings at the operating points of interest (MSMARCOV1), so this covers
+        // most queries without a rehash while keeping the table inside L2. The previous
+        // `query_cut * 5000` sizing asked for ~288 KB per query.
+        let mut visited = FxHashSet::with_capacity_and_hasher(2000, Default::default());
 
         // Evaluate the posting list only for the top score query terms
         let mut iter = query_components
@@ -236,7 +245,7 @@ where
     /// Convert the `InvertedIndexBase`'s dataset to another one.
     pub fn convert_dataset_from<T>(inverted_index: InvertedIndexBase<T>) -> Self
     where
-        S: Dataset + SparseData + ConvertFrom<T>,
+        S: Dataset + SparseData + ConvertFrom<T, Config = ()>,
         T: Dataset + SparseData,
         EncoderFor<T>: SparseDataEncoder<OutputComponentType = ComponentFor<S>>,
     {
@@ -249,7 +258,7 @@ where
         let old_packs: Vec<_> = (0..forward_index.len())
             .map(|i| PackedPostingBlock::pack(forward_index.range_from_id(i as u64)))
             .collect();
-        let new_dataset = ConvertInto::<S>::convert_into(forward_index);
+        let new_dataset = ConvertInto::<S>::convert_into(forward_index, ());
         let new_packs: Vec<_> = (0..new_dataset.len())
             .map(|i| PackedPostingBlock::pack(new_dataset.range_from_id(i as u64)))
             .collect();
@@ -262,6 +271,9 @@ where
 
         for posting in posting_lists.iter_mut() {
             for pack in posting.packed_postings_mut().iter_mut() {
+                *pack = packs_map[pack];
+            }
+            for pack in posting.medoid_postings_mut().iter_mut() {
                 *pack = packs_map[pack];
             }
         }
@@ -277,15 +289,23 @@ where
     /// Convert the `InvertedIndexBase`'s dataset to another one.
     pub fn convert_dataset_into<T>(self) -> InvertedIndexBase<T>
     where
-        T: Dataset + SparseData + ConvertFrom<S>,
+        T: Dataset + SparseData + ConvertFrom<S, Config = ()>,
         EncoderFor<T>: SparseDataEncoder<OutputComponentType = ComponentFor<S>>,
     {
         InvertedIndexBase::<T>::convert_dataset_from(self)
     }
 
-    // Add a precomputed knn graph to the index, limiting the number of neighbours to limit if it is not None
-    //pub fn add_knn(&mut self, knn: Knn, limit: Option<usize>) {
+    // Add a precomputed knn graph to the index. The graph must have one row per document of this
+    // index: `refine` indexes it by document id without bounds checks, so a graph of another
+    // collection (or of a prefix of this one) would be read out of bounds.
     pub fn add_knn(&mut self, knn: Knn) {
+        assert_eq!(
+            knn.n_vecs(),
+            self.len(),
+            "the kNN graph has {} rows but the index has {} documents",
+            knn.n_vecs(),
+            self.len()
+        );
         self.knn = Some(knn);
     }
 
@@ -328,8 +348,40 @@ where
             .collect()
     }
 
-    // Implementation of the pruning strategy that selects the top-x posting from each posting list where x is alpha times the number of postings in the list or max_n_posting if too big.
-    #[allow(unused)]
+    // Distributes every posting to its component's list and then applies `coi_pruning`.
+    //
+    // Unlike `fixed_pruning` this cannot use a bounded heap: the COI cut is a fraction of the
+    // *full* list length, so each list has to be materialised in full before it can be pruned.
+    fn coi_threshold_pruning(
+        dataset: &S,
+        alpha: f32,
+        n_postings: usize,
+    ) -> Vec<Vec<(ValueFor<S>, usize)>>
+    where
+        S: SeismicBuildDataset,
+        ValueFor<S>: PartialOrd + Send,
+    {
+        let mut inverted_pairs: Vec<Vec<(ValueFor<S>, usize)>> =
+            (0..dataset.input_dim()).map(|_| Vec::new()).collect();
+
+        for (i, posting) in dataset.iter().enumerate() {
+            for (&component, &value) in posting.components().iter().zip(posting.values()) {
+                inverted_pairs[component.as_()].push((value, i));
+            }
+        }
+
+        // `n_postings == 0` means no cap, and with no cap there is nothing to truncate to.
+        if n_postings > 0 {
+            Self::coi_pruning(&mut inverted_pairs, alpha, n_postings);
+        }
+
+        inverted_pairs
+    }
+
+    // Set α-MSS pruning (Definition of the set α-mass subvector sketch in the paper): each posting
+    // list keeps only its top `alpha * len` entries, capped at `max_n_postings`. Note that alpha is a
+    // fraction of the list *length*, not of its L1 mass; the paper shows that this preserves a
+    // fraction alpha of each vector's L1 mass only in expectation.
     fn coi_pruning<V: PartialOrd + Send>(
         inverted_pairs: &mut Vec<Vec<(V, usize)>>,
         alpha: f32,
@@ -553,21 +605,67 @@ impl SpaceUsage for Knn {
 }
 
 impl Knn {
+    /// Query cut used by the search-based construction when no override is given.
+    pub const KNN_QUERY_CUT: usize = 10;
+    /// Heap factor used by the search-based construction when no override is given.
+    pub const KNN_HEAP_FACTOR: f32 = 0.7;
+
+    /// Builds the graph by searching every document against `index`, with the
+    /// construction parameters this has always used: query cut 10, heap factor
+    /// 0.7, `first_sorted` off.
     pub fn new<S>(index: &InvertedIndexBase<S>, dim: usize) -> Self
     where
         S: SeismicBuildDataset + SeismicSearchDataset,
         for<'q> <EncoderFor<S> as VectorEncoder>::QueryVector<'q>:
             From<SparseVectorView<'q, ComponentFor<S>, f32>>,
     {
-        const KNN_QUERY_CUT: usize = 10;
-        const KNN_HEAP_FACTOR: f32 = 0.7;
+        Self::new_with_params(
+            index,
+            dim,
+            Self::KNN_QUERY_CUT,
+            None,
+            Self::KNN_HEAP_FACTOR,
+            false,
+        )
+    }
 
+    /// Same construction as [`Knn::new`], with the search parameters exposed.
+    ///
+    /// The defaults baked into `new` were chosen for the `global-threshold`
+    /// index family; on other families a different (query_cut, heap_factor)
+    /// pair can reach a higher-accuracy graph, or the same accuracy for less
+    /// work, so the graph builder needs to be able to move them.
+    ///
+    /// `query_energy` selects the energy-preserving query pruning instead of
+    /// the fixed `query_cut`: each document, searched as a query, is cut at the
+    /// smallest prefix of its largest values holding that fraction of its mass
+    /// ([`energy_preserving_cut`], the same rule `perf_inverted_index` applies
+    /// to real queries). When set, `query_cut` is ignored. This is the knob
+    /// the COI variant exposes at query time, so a graph built to be compared
+    /// with COI query pruning must be built through it.
+    pub fn new_with_params<S>(
+        index: &InvertedIndexBase<S>,
+        dim: usize,
+        query_cut: usize,
+        query_energy: Option<f32>,
+        heap_factor: f32,
+        first_sorted: bool,
+    ) -> Self
+    where
+        S: SeismicBuildDataset + SeismicSearchDataset,
+        for<'q> <EncoderFor<S> as VectorEncoder>::QueryVector<'q>:
+            From<SparseVectorView<'q, ComponentFor<S>, f32>>,
+    {
         let n_vecs = index.len();
+        // Documents whose search returned fewer than `dim` neighbours (see below).
+        let short_rows = AtomicUsize::new(0);
         print!("Computing kNN: ");
         let docs_search_results: Vec<_> = (0..index.forward_index.len())
             .into_par_iter()
             .progress_count(index.forward_index.len() as u64)
-            .map(|my_doc_id| {
+            // Per-thread scratch buffer for the energy cut: one allocation per thread
+            // instead of one per document.
+            .map_init(Vec::new, |buf, my_doc_id| {
                 let vec = index.forward_index.get(my_doc_id as u64);
 
                 let components = vec.components();
@@ -576,27 +674,49 @@ impl Knn {
                 let components = components.to_vec();
                 let query = SparseVectorView::new(components.as_slice(), f32_values.as_slice());
 
-                index
+                // Per-document cut: the same energy rule as query-side pruning.
+                let effective_query_cut = match query_energy {
+                    Some(fraction) => energy_preserving_cut(&f32_values, fraction, buf),
+                    None => query_cut,
+                };
+
+                let mut row: Vec<u64> = index
                     .search(
                         query,
                         dim + 1, // +1 to filter the document itself if present
-                        KNN_QUERY_CUT,
-                        KNN_HEAP_FACTOR,
+                        effective_query_cut,
+                        heap_factor,
                         0,
-                        false,
+                        first_sorted,
                     )
                     .into_iter()
                     .filter(|result| result.vector != my_doc_id as u64) // remove the document itself
                     .take(dim)
-                    .collect::<Vec<_>>()
+                    .map(|result| result.vector)
+                    .collect();
+
+                // The graph is stored row major with exactly `dim` entries per document, so a
+                // short row (a document with too few postings under its cut, or an empty one)
+                // would shift every row after it. Pad it with the document itself: `refine`
+                // rescores a neighbour at most once through the visited set, and the document
+                // is either already in the heap or a legitimate candidate.
+                if row.len() < dim {
+                    short_rows.fetch_add(1, Ordering::Relaxed);
+                    row.resize(dim, my_doc_id as u64);
+                }
+                row
             })
             .collect();
 
-        let neighbours: Vec<u64> = docs_search_results
-            .into_iter()
-            .flatten()
-            .map(|result| result.vector)
-            .collect();
+        let neighbours: Vec<u64> = docs_search_results.into_iter().flatten().collect();
+        assert_eq!(neighbours.len(), n_vecs * dim);
+
+        let short_rows = short_rows.into_inner();
+        if short_rows > 0 {
+            println!(
+                "Warning: {short_rows} documents got fewer than {dim} neighbours and were padded with themselves"
+            );
+        }
 
         let bitfield = BitField::from(neighbours);
 
@@ -647,12 +767,53 @@ impl Knn {
         }
     }
 
+    /// Builds a graph from an explicit neighbour list, `dim` neighbours per vector, row major.
+    ///
+    /// This is how a graph computed elsewhere gets in. `new` recomputes the neighbours with
+    /// Seismic's own approximate search, which is a different graph from one produced by an
+    /// external kNN library, so importing and recomputing are not interchangeable when the
+    /// graph is meant to be a fixed input of an experiment.
+    pub fn from_neighbours(n_vecs: usize, dim: usize, neighbours: Vec<u64>) -> Self {
+        assert_eq!(
+            neighbours.len(),
+            n_vecs * dim,
+            "expected {} neighbours ({n_vecs} vectors x {dim}), got {}",
+            n_vecs * dim,
+            neighbours.len()
+        );
+
+        Self {
+            n_vecs,
+            dim,
+            neighbours: BitField::from(neighbours),
+        }
+    }
+
     pub fn serialize(&self, output_file: &str) -> IoResult<()> {
         let path = output_file.to_string() + ".knn.seismic";
         println!("Saving ... {}", path.as_str());
         self.save_index(path.as_str())
             .map_err(|err| std::io::Error::other(format!("{err:?}")))?;
         Ok(())
+    }
+
+    /// Number of vectors the graph stores a neighbour list for.
+    pub fn n_vecs(&self) -> usize {
+        self.n_vecs
+    }
+
+    /// Number of neighbours stored per vector.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// The stored neighbour ids of `doc_id`, in rank order.
+    pub fn neighbours_of(&self, doc_id: usize) -> Vec<u64> {
+        assert!(doc_id < self.n_vecs, "doc_id {doc_id} out of range");
+        let base_pos = doc_id * self.dim;
+        (0..self.dim)
+            .map(|i| self.neighbours.get(base_pos + i).unwrap())
+            .collect()
     }
 
     #[inline]
@@ -725,12 +886,8 @@ where
                 n_postings,
                 max_fraction,
             } => Self::global_threshold_pruning(&dataset, n_postings, max_fraction),
-            // Partial pruning for CoiThreshold is not implemented yet. Need to estimate the number of postings in the final list
-            PruningStrategy::CoiThreshold {
-                alpha: _,
-                n_postings: _,
-            } => {
-                todo!()
+            PruningStrategy::CoiThreshold { alpha, n_postings } => {
+                Self::coi_threshold_pruning(&dataset, alpha, n_postings)
             }
         };
 
@@ -810,7 +967,7 @@ where
     /// Convenience function to build InvertedIndexBase using a dataset as a base, then converting it.
     pub fn from_base_dataset<T>(dataset: T, config: Configuration) -> Self
     where
-        S: ConvertFrom<T>,
+        S: ConvertFrom<T, Config = ()>,
         T: SeismicBuildDataset + SeismicSearchDataset,
         EncoderFor<T>: SparseVectorEncoder<OutputComponentType = ComponentFor<S>>,
         for<'a> <EncoderFor<T> as VectorEncoder>::QueryVector<'a>:
@@ -1097,6 +1254,162 @@ mod tests {
             for pair in list.windows(2) {
                 assert!(pair[0].0 > pair[1].0 || (pair[0].0 == pair[1].0 && pair[0].1 < pair[1].1));
             }
+        }
+    }
+
+    // With medoid summarization the medoid of each block is stored apart from the other docs
+    // of the block: `get_doc_ids_in_postings` must return both.
+    #[test]
+    fn test_get_doc_ids_in_postings_includes_medoids() {
+        const DIM: usize = 6;
+        const N_DOCS: usize = 20;
+        let has_component =
+            |doc_id: usize, component: usize| !(doc_id + component).is_multiple_of(3);
+
+        let blocking_strategies = [
+            BlockingStrategy::FixedSize { block_size: 4 },
+            BlockingStrategy::default(),
+        ];
+        let summarization_strategies = [
+            SummarizationStrategy::Medoid,
+            SummarizationStrategy::default(),
+        ];
+
+        for blocking in blocking_strategies {
+            for summarization in summarization_strategies {
+                let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(DIM, DIM);
+                let mut dataset = PlainSparseDatasetGrowable::new(quantizer);
+                for doc_id in 0..N_DOCS {
+                    let components: Vec<u16> = (0..DIM)
+                        .filter(|&c| has_component(doc_id, c))
+                        .map(|c| c as u16)
+                        .collect();
+                    let values: Vec<f32> = components
+                        .iter()
+                        .map(|&c| 1.0 + ((doc_id * (c as usize + 1)) % 5) as f32)
+                        .collect();
+                    dataset.push(SparseVectorView::new(
+                        components.as_slice(),
+                        values.as_slice(),
+                    ));
+                }
+                let dataset: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
+
+                // Large enough to keep every posting, so each list holds all the docs with
+                // that component.
+                let config = Configuration::default()
+                    .pruning_strategy(PruningStrategy::FixedSize { n_postings: N_DOCS })
+                    .blocking_strategy(blocking)
+                    .summarization_strategy(summarization);
+                let index = InvertedIndexBase::build(dataset, config);
+
+                for component in 0..DIM {
+                    let mut doc_ids = index.get_doc_ids_in_postings(component);
+                    doc_ids.sort_unstable();
+                    let expected: Vec<usize> = (0..N_DOCS)
+                        .filter(|&doc_id| has_component(doc_id, component))
+                        .collect();
+                    assert_eq!(
+                        doc_ids, expected,
+                        "list {component}, {blocking:?}, {summarization:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // With a heap factor of 0 no block is pruned, so a medoid index that keeps every posting
+    // and visits every list of the query must return the exact top-k. The test is built so
+    // that the top-k holds every doc of a list visited with a full heap, and the lists are
+    // long enough to go through all the paths of the medoid scan: groups of six medoids plus
+    // a remainder, and more than one chunk of blocks.
+    #[test]
+    fn test_medoid_search_without_pruning_is_exact() {
+        const DIM: usize = 8;
+        const N_WEAK_DOCS: usize = 600;
+        const N_DOCS: usize = 1600;
+        const K: usize = 600;
+
+        let mut state = 42_u64;
+        let mut docs: Vec<(Vec<u16>, Vec<f32>)> = Vec::with_capacity(N_DOCS);
+        // The weak docs only have component 0, the other docs never have it. The queries pair
+        // component 0, with the largest weight, with one other component: the list of
+        // component 0 is visited first and fills the heap with the weak docs, which score
+        // less than any doc of the second list. The second list is shorter than k, so all of
+        // its docs must be returned.
+        for _ in 0..N_WEAK_DOCS {
+            docs.push((vec![0], vec![1.0]));
+        }
+        for _ in N_WEAK_DOCS..N_DOCS {
+            let components: Vec<u16> = (1..DIM as u16)
+                .filter(|_| lcg(&mut state).is_multiple_of(2))
+                .collect();
+            let values: Vec<f32> = components
+                .iter()
+                .map(|_| 10.0 + (lcg(&mut state) % 50) as f32)
+                .collect();
+            docs.push((components, values));
+        }
+
+        let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(DIM, DIM);
+        let mut dataset = PlainSparseDatasetGrowable::new(quantizer);
+        for (components, values) in &docs {
+            dataset.push(SparseVectorView::new(
+                components.as_slice(),
+                values.as_slice(),
+            ));
+        }
+        let dataset: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
+
+        let config = Configuration::default()
+            .pruning_strategy(PruningStrategy::FixedSize { n_postings: N_DOCS })
+            .blocking_strategy(BlockingStrategy::FixedSize { block_size: 4 })
+            .summarization_strategy(SummarizationStrategy::Medoid);
+        let index = InvertedIndexBase::build(dataset, config);
+
+        for component in 1..DIM as u16 {
+            let query_components = [0, component];
+            let query_values = [9.0, 1.0 + (lcg(&mut state) % 8) as f32];
+
+            // Each doc shares at most one component with the query, and the values are small
+            // integers: the scores are exact and can be compared with `==`.
+            let weight = |c: u16| match query_components.iter().position(|&q| q == c) {
+                Some(i) => query_values[i],
+                None => 0.0,
+            };
+            let doc_scores: Vec<f32> = docs
+                .iter()
+                .map(|(components, values)| {
+                    let terms = components.iter().zip(values);
+                    terms.map(|(&c, &v)| weight(c) * v).sum()
+                })
+                .collect();
+            let mut expected = doc_scores.clone();
+            expected.sort_unstable_by(|a, b| b.total_cmp(a));
+            expected.truncate(K);
+            // The second list holds more than one chunk of blocks, and fits in the top-k.
+            let list_len = doc_scores.iter().filter(|&&s| s > query_values[0]).count();
+            assert!(64 * 4 < list_len && list_len < K);
+
+            let query = SparseVectorView::new(query_components.as_slice(), query_values.as_slice());
+            let results = index.search(query, K, 2, 0.0, 0, false);
+
+            // Each doc comes with its own score, medoids included...
+            for scored in &results {
+                assert_eq!(
+                    scored.distance.distance(),
+                    doc_scores[scored.vector as usize],
+                    "component {component}, doc {}",
+                    scored.vector
+                );
+            }
+            // ...and the scores are the k best ones.
+            let mut scores: Vec<f32> = results
+                .iter()
+                .map(|scored| scored.distance.distance())
+                .collect();
+            scores.sort_unstable_by(|a, b| b.total_cmp(a));
+            assert_eq!(scores, expected, "component {component}");
         }
     }
 }

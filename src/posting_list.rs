@@ -14,7 +14,6 @@ use crate::utils::{
     do_random_kmeans_on_docids_ii_dot_product,
 };
 
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use num_traits::{AsPrimitive, ToPrimitive};
@@ -70,14 +69,19 @@ impl SpaceUsage for PackedPostingBlock {
 pub(crate) struct PostingList<C: ComponentType> {
     packed_postings: Box<[PackedPostingBlock]>,
     block_offsets: Box<[usize]>,
-    summaries: QuantizedSummary<C>,
+    summaries: Option<QuantizedSummary<C>>,
+    #[serde(default)]
+    use_medoid_pruning: bool,
+    #[serde(default)]
+    medoid_postings: Box<[PackedPostingBlock]>,
 }
 
 impl<C: ComponentType + SpaceUsage> SpaceUsage for PostingList<C> {
     fn space_usage_bytes(&self) -> usize {
         SpaceUsage::space_usage_bytes(&self.packed_postings)
             + SpaceUsage::space_usage_bytes(&self.block_offsets)
-            + self.summaries.space_usage_bytes()
+            + self.summaries.as_ref().map_or(0, |s| s.space_usage_bytes())
+            + SpaceUsage::space_usage_bytes(&self.medoid_postings)
     }
 }
 
@@ -101,12 +105,49 @@ impl<C: ComponentType> PostingList<C> {
 
     #[inline]
     pub(crate) fn summaries(&self) -> &QuantizedSummary<C> {
-        &self.summaries
+        self.summaries
+            .as_ref()
+            .expect("summaries not available for medoid index")
     }
+
+    #[inline]
+    pub(crate) fn summaries_space_bytes(&self) -> usize
+    where
+        C: SpaceUsage,
+    {
+        self.summaries.as_ref().map_or(0, |s| s.space_usage_bytes())
+    }
+
+    #[inline]
+    pub(crate) fn medoid_postings(&self) -> &[PackedPostingBlock] {
+        &self.medoid_postings
+    }
+
+    #[inline]
+    pub(crate) fn medoid_postings_mut(&mut self) -> &mut [PackedPostingBlock] {
+        &mut self.medoid_postings
+    }
+
     pub(crate) fn get_all_doc_ranges(&self) -> Vec<std::ops::Range<usize>> {
-        let mut ranges = Vec::with_capacity(self.packed_postings().len());
-        for pack in self.packed_postings().iter() {
-            ranges.push(pack.unpack());
+        let mut ranges =
+            Vec::with_capacity(self.packed_postings().len() + self.medoid_postings().len());
+
+        if !self.use_medoid_pruning {
+            for pack in self.packed_postings().iter() {
+                ranges.push(pack.unpack());
+            }
+            return ranges;
+        }
+
+        // Medoid lists keep the medoid of each block apart from the other docs of the block:
+        // emit it first, followed by the rest of its block.
+        for (block_id, medoid) in self.medoid_postings().iter().enumerate() {
+            ranges.push(medoid.unpack());
+            let block = &self.packed_postings()
+                [self.block_offsets[block_id]..self.block_offsets[block_id + 1]];
+            for pack in block.iter() {
+                ranges.push(pack.unpack());
+            }
         }
 
         ranges
@@ -125,24 +166,70 @@ impl<C: ComponentType> PostingList<C> {
     ) where
         S: SeismicSearchDataset,
     {
-        let dots = self.summaries().distances(query);
-
-        for (block_id, dot) in dots.into_iter().enumerate() {
-            if heap.len() == k && dot < heap_factor * heap.peek().distance.distance() {
-                continue;
-            }
-
-            let block_offsets = self.block_offsets();
-            let packed_posting_block =
-                &self.packed_postings()[block_offsets[block_id]..block_offsets[block_id + 1]];
-
-            self.evaluate_posting_block(
+        if self.use_medoid_pruning {
+            return self.search_with_medoid(
                 evaluator,
-                packed_posting_block,
+                k,
+                heap_factor,
                 heap,
                 visited,
                 forward_index,
             );
+        }
+
+        let dots = self.summaries().distances(query);
+
+        if heap.len() == k {
+            // The pruning threshold, taken once. While the blocks of this list are evaluated
+            // `heap.peek()` can only improve and `heap_factor` is positive, so the live
+            // threshold is never smaller than this one: a block dropped here would have been
+            // dropped by the live test as well. Taking it once turns the scan into a plain
+            // pass over a slice of `f32`, instead of a chain of loads from the heap that the
+            // compiler cannot hoist because the heap is mutated inside the loop.
+            let snapshot = heap_factor * heap.peek().distance.distance();
+
+            // A tiny fraction of the blocks survives, so the scan works one chunk at a time:
+            // when no element of a chunk clears the threshold the whole chunk is skipped.
+            // The per-element check is written as `!(d < snapshot)` so that it is the exact
+            // negation of the chunk reduction: the two tests agree on every score and the
+            // filter is equivalent to the scalar `if dot < threshold { skip }` it replaces.
+            // Survivors are visited in place, against the live threshold.
+            const CHUNK: usize = 64;
+            for (c, chunk) in dots.chunks(CHUNK).enumerate() {
+                if chunk.iter().fold(true, |acc, &d| acc & (d < snapshot)) {
+                    continue;
+                }
+                for (i, &d) in chunk.iter().enumerate() {
+                    if !(d < snapshot) {
+                        self.visit_block_if_promising(
+                            c * CHUNK + i,
+                            d,
+                            evaluator,
+                            k,
+                            heap_factor,
+                            heap,
+                            visited,
+                            forward_index,
+                        );
+                    }
+                }
+            }
+        } else {
+            // The heap is not full yet, so there is no threshold to apply: blocks are visited in
+            // order and the live test inside `visit_block_if_promising` starts pruning as soon
+            // as the heap fills up.
+            for (block_id, dot) in dots.iter().copied().enumerate() {
+                self.visit_block_if_promising(
+                    block_id,
+                    dot,
+                    evaluator,
+                    k,
+                    heap_factor,
+                    heap,
+                    visited,
+                    forward_index,
+                );
+            }
         }
     }
 
@@ -159,30 +246,109 @@ impl<C: ComponentType> PostingList<C> {
     ) where
         S: SeismicSearchDataset,
     {
-        let dots = self.summaries().distances(query);
-        let dots: Vec<_> = dots
-            .into_iter()
-            .enumerate()
-            .sorted_unstable_by(|&(_, a), &(_, b)| b.total_cmp(&a))
-            .collect();
-
-        for (block_id, dot) in dots {
-            if heap.len() == k && dot < heap_factor * heap.peek().distance.distance() {
-                continue;
-            }
-
-            let block_offsets = self.block_offsets();
-            let packed_posting_block =
-                &self.packed_postings()[block_offsets[block_id]..block_offsets[block_id + 1]];
-
-            self.evaluate_posting_block(
+        if self.use_medoid_pruning {
+            return self.search_with_medoid(
                 evaluator,
-                packed_posting_block,
+                k,
+                heap_factor,
                 heap,
                 visited,
                 forward_index,
             );
         }
+
+        let dots = self.summaries().distances(query);
+        // Blocks are visited in decreasing summary score, but a full sort is wasted work: the
+        // heap-factor threshold lets a tiny fraction of them through, and after the first few
+        // blocks the threshold barely moves. So only the HEAD best blocks are selected and
+        // sorted (O(n)); once they have set the threshold, the rest is filtered against it in
+        // one linear pass and only the survivors get sorted. The threshold never decreases, so
+        // a block dropped here would have been skipped by the sorted scan as well, and the
+        // survivors are visited in the same order: the result is the same.
+        const HEAD: usize = 32;
+        let mut order: Vec<(usize, f32)> = dots.into_iter().enumerate().collect();
+        let n = order.len();
+        let head = HEAD.min(n);
+        let descending = |a: &(usize, f32), b: &(usize, f32)| b.1.total_cmp(&a.1);
+        if 0 < head && head < n {
+            order.select_nth_unstable_by(head - 1, descending);
+        }
+        order[..head].sort_unstable_by(descending);
+
+        for &(block_id, dot) in &order[..head] {
+            self.visit_block_if_promising(
+                block_id,
+                dot,
+                evaluator,
+                k,
+                heap_factor,
+                heap,
+                visited,
+                forward_index,
+            );
+        }
+
+        let mut tail: Vec<(usize, f32)> = if heap.len() == k {
+            let threshold = heap_factor * heap.peek().distance.distance();
+            order[head..]
+                .iter()
+                .copied()
+                .filter(|&(_, dot)| !(dot < threshold))
+                .collect()
+        } else {
+            order[head..].to_vec()
+        };
+        tail.sort_unstable_by(descending);
+
+        for (block_id, dot) in tail {
+            self.visit_block_if_promising(
+                block_id,
+                dot,
+                evaluator,
+                k,
+                heap_factor,
+                heap,
+                visited,
+                forward_index,
+            );
+        }
+    }
+
+    /// Evaluates block `block_id` unless its summary score falls under the heap-factor
+    /// threshold of the current top-k.
+    ///
+    /// The threshold is re-read from the heap here: the snapshot taken in `search` only
+    /// pre-filters, and the k-th best may have risen since, so a block that passed the
+    /// snapshot can still be skipped. With a non-full heap every block is evaluated.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn visit_block_if_promising<'e, S>(
+        &self,
+        block_id: usize,
+        dot: f32,
+        evaluator: &<EncoderFor<S> as VectorEncoder>::Evaluator<'e>,
+        k: usize,
+        heap_factor: f32,
+        heap: &mut KHeap<ScoredRange<DotProduct>>,
+        visited: &mut FxHashSet<usize>,
+        forward_index: &'e S,
+    ) where
+        S: SeismicSearchDataset,
+    {
+        if heap.len() == k && dot < heap_factor * heap.peek().distance.distance() {
+            return;
+        }
+        let block_offsets = self.block_offsets();
+        let packed_posting_block =
+            &self.packed_postings()[block_offsets[block_id]..block_offsets[block_id + 1]];
+
+        self.evaluate_posting_block(
+            evaluator,
+            packed_posting_block,
+            heap,
+            visited,
+            forward_index,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -204,15 +370,170 @@ impl<C: ComponentType> PostingList<C> {
             forward_index.prefetch_with_range(range);
         }
 
+        // Unvisited documents are scored six at a time: the batched kernel walks the six
+        // vectors in lockstep, so their cache misses overlap instead of being paid one after
+        // the other, and the six accumulators are independent. Each accumulator sums in the
+        // same order as the single-vector kernel, so the scores are identical.
+        let mut buf: [std::ops::Range<usize>; 6] = Default::default();
+        let mut count = 0;
         for pack in packed_posting_block.iter() {
             let range = pack.unpack();
-
-            if visited.insert(range.start) {
-                let vector = forward_index.get_with_range(range.clone());
-                let distance = evaluator.compute_distance(vector);
-                heap.push(ScoredRange { distance, range });
+            if !visited.insert(range.start) {
+                continue;
+            }
+            buf[count] = range;
+            count += 1;
+            if count == 6 {
+                let distances = evaluator.compute_distances_batch6([
+                    forward_index.get_with_range(buf[0].clone()),
+                    forward_index.get_with_range(buf[1].clone()),
+                    forward_index.get_with_range(buf[2].clone()),
+                    forward_index.get_with_range(buf[3].clone()),
+                    forward_index.get_with_range(buf[4].clone()),
+                    forward_index.get_with_range(buf[5].clone()),
+                ]);
+                for (range, distance) in buf.iter().zip(distances) {
+                    heap.push(ScoredRange {
+                        distance,
+                        range: range.clone(),
+                    });
+                }
+                count = 0;
             }
         }
+        for range in buf.iter().take(count) {
+            let vector = forward_index.get_with_range(range.clone());
+            let distance = evaluator.compute_distance(vector);
+            heap.push(ScoredRange {
+                distance,
+                range: range.clone(),
+            });
+        }
+    }
+
+    fn search_with_medoid<'e, S>(
+        &self,
+        evaluator: &mut <EncoderFor<S> as VectorEncoder>::Evaluator<'e>,
+        k: usize,
+        heap_factor: f32,
+        heap: &mut KHeap<ScoredRange<DotProduct>>,
+        visited: &mut FxHashSet<usize>,
+        forward_index: &'e S,
+    ) where
+        S: SeismicSearchDataset,
+    {
+        let n_blocks = self.medoid_postings.len();
+        if n_blocks == 0 {
+            return;
+        }
+
+        // The medoid of every block is scored against the query: these scores play the role
+        // that the summary scores have in `search`. Medoids are prefetched and scored six at a
+        // time with the batched kernel, as the documents of a block are in
+        // `evaluate_posting_block`: the scores are the ones of the single-vector kernel.
+        let mut distances: Vec<DotProduct> = Vec::with_capacity(n_blocks);
+        let (groups, rest) = self.medoid_postings.as_chunks::<6>();
+        for group in groups {
+            for medoid in group {
+                forward_index.prefetch_with_range(medoid.unpack());
+            }
+            distances.extend(evaluator.compute_distances_batch6(std::array::from_fn(|i| {
+                forward_index.get_with_range(group[i].unpack())
+            })));
+        }
+        for medoid in rest {
+            forward_index.prefetch_with_range(medoid.unpack());
+        }
+        for medoid in rest {
+            distances
+                .push(evaluator.compute_distance(forward_index.get_with_range(medoid.unpack())));
+        }
+
+        // Blocks are pruned by the score of their medoid, in the order they are stored. The scan
+        // is the one of `search`: with a full heap the threshold is taken once and the scores
+        // are filtered one chunk at a time, and the survivors are checked again against the
+        // live threshold. See there for why the blocks that get evaluated are the same.
+        if heap.len() == k {
+            let snapshot = heap_factor * heap.peek().distance.distance();
+
+            const CHUNK: usize = 64;
+            for (c, chunk) in distances.chunks(CHUNK).enumerate() {
+                if chunk
+                    .iter()
+                    .fold(true, |acc, d| acc & (d.distance() < snapshot))
+                {
+                    continue;
+                }
+                for (i, &medoid_dist) in chunk.iter().enumerate() {
+                    if !(medoid_dist.distance() < snapshot) {
+                        self.visit_medoid_block_if_promising(
+                            c * CHUNK + i,
+                            medoid_dist,
+                            evaluator,
+                            k,
+                            heap_factor,
+                            heap,
+                            visited,
+                            forward_index,
+                        );
+                    }
+                }
+            }
+        } else {
+            for (block_id, medoid_dist) in distances.into_iter().enumerate() {
+                self.visit_medoid_block_if_promising(
+                    block_id,
+                    medoid_dist,
+                    evaluator,
+                    k,
+                    heap_factor,
+                    heap,
+                    visited,
+                    forward_index,
+                );
+            }
+        }
+    }
+
+    /// Medoid counterpart of `visit_block_if_promising`: block `block_id` is evaluated unless
+    /// the score of its medoid falls under the heap-factor threshold of the current top-k.
+    /// The medoid is a document of the block stored apart from the others, so it enters the
+    /// heap with the score it already has.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn visit_medoid_block_if_promising<'e, S>(
+        &self,
+        block_id: usize,
+        medoid_dist: DotProduct,
+        evaluator: &<EncoderFor<S> as VectorEncoder>::Evaluator<'e>,
+        k: usize,
+        heap_factor: f32,
+        heap: &mut KHeap<ScoredRange<DotProduct>>,
+        visited: &mut FxHashSet<usize>,
+        forward_index: &'e S,
+    ) where
+        S: SeismicSearchDataset,
+    {
+        if heap.len() == k && medoid_dist.distance() < heap_factor * heap.peek().distance.distance()
+        {
+            return;
+        }
+        let medoid_range = self.medoid_postings[block_id].unpack();
+        if visited.insert(medoid_range.start) {
+            heap.push(ScoredRange {
+                distance: medoid_dist,
+                range: medoid_range,
+            });
+        }
+        let packed_posting_block =
+            &self.packed_postings()[self.block_offsets[block_id]..self.block_offsets[block_id + 1]];
+        self.evaluate_posting_block(
+            evaluator,
+            packed_posting_block,
+            heap,
+            visited,
+            forward_index,
+        );
     }
 
     fn fixed_size_blocking(posting_list: &[usize], block_size: usize) -> Vec<usize> {
@@ -485,6 +806,63 @@ impl<C> PostingList<C>
 where
     C: ComponentType + std::hash::Hash,
 {
+    /// Find the medoid of a block: the document with the highest dot product with
+    /// the block centroid (average vector).
+    fn find_medoid<S>(dataset: &S, block: &[usize]) -> usize
+    where
+        S: SeismicBuildDataset,
+    {
+        if block.is_empty() {
+            return 0;
+        }
+        if block.len() == 1 {
+            return block[0];
+        }
+
+        let mut centroid: FxHashMap<ComponentFor<S>, f32> = FxHashMap::default();
+        for &doc_id in block.iter() {
+            let posting = dataset.get(doc_id as u64);
+            for (&c, &v) in posting.components().iter().zip(posting.values()) {
+                *centroid.entry(c).or_insert(0.0) += v.to_f32().unwrap();
+            }
+        }
+        let block_size = block.len() as f32;
+        for val in centroid.values_mut() {
+            *val /= block_size;
+        }
+
+        let mut best_doc = block[0];
+        let mut best_dot = 0.0f32;
+        for &doc_id in block.iter() {
+            let posting = dataset.get(doc_id as u64);
+            let dot: f32 = posting
+                .components()
+                .iter()
+                .zip(posting.values())
+                .filter_map(|(&c, &v)| centroid.get(&c).map(|&cv| v.to_f32().unwrap() * cv))
+                .sum();
+            if dot > best_dot {
+                best_dot = dot;
+                best_doc = doc_id;
+            }
+        }
+        best_doc
+    }
+
+    /// Reorder a block in-place so its medoid is at position 0.
+    fn reorder_with_medoid_first<S>(dataset: &S, block: &mut [usize])
+    where
+        S: SeismicBuildDataset,
+    {
+        if block.len() <= 1 {
+            return;
+        }
+        let medoid_doc = Self::find_medoid(dataset, block);
+        if let Some(pos) = block.iter().position(|&x| x == medoid_doc) {
+            block.swap(0, pos);
+        }
+    }
+
     pub(crate) fn build<S>(
         dataset: &S,
         postings: &[(ValueFor<S>, usize)],
@@ -514,6 +892,45 @@ where
             ),
         };
 
+        if matches!(config.summarization, SummarizationStrategy::Medoid) {
+            // Reorder each block so the medoid is first.
+            for &[block_start, block_end] in block_offsets.array_windows() {
+                Self::reorder_with_medoid_first(dataset, &mut posting_list[block_start..block_end]);
+            }
+
+            let n_blocks = block_offsets.len().saturating_sub(1);
+            let mut medoid_postings = Vec::with_capacity(n_blocks);
+
+            // packed_postings: non-medoid docs only; block_offsets re-computed accordingly.
+            let mut new_block_offsets = Vec::with_capacity(n_blocks + 1);
+            new_block_offsets.push(0usize);
+            let mut packed_postings =
+                Vec::with_capacity(posting_list.len().saturating_sub(n_blocks));
+
+            for i in 0..n_blocks {
+                let block_start = block_offsets[i];
+                let block_end = block_offsets[i + 1];
+                let medoid_id = posting_list[block_start];
+                medoid_postings.push(PackedPostingBlock::pack(
+                    dataset.range_from_id(medoid_id as u64),
+                ));
+                for &doc_id in &posting_list[block_start + 1..block_end] {
+                    packed_postings.push(PackedPostingBlock::pack(
+                        dataset.range_from_id(doc_id as u64),
+                    ));
+                }
+                new_block_offsets.push(packed_postings.len());
+            }
+
+            return Self {
+                packed_postings: packed_postings.into_boxed_slice(),
+                block_offsets: new_block_offsets.into_boxed_slice(),
+                summaries: None,
+                use_medoid_pruning: true,
+                medoid_postings: medoid_postings.into_boxed_slice(),
+            };
+        }
+
         let quantizer = vectorium::PlainSparseQuantizer::<C, f32, vectorium::DotProduct>::new(
             dataset.input_dim(),
             dataset.input_dim(),
@@ -542,6 +959,8 @@ where
                             fraction,
                             &mut scratch,
                         ),
+
+                        SummarizationStrategy::Medoid => unreachable!(),
                     };
                     let (components, values): (Vec<C>, Vec<f32>) = summary_vec.into_iter().unzip();
                     (components, values)
@@ -561,7 +980,9 @@ where
         Self {
             packed_postings: packed_postings.into_boxed_slice(),
             block_offsets: block_offsets.into_boxed_slice(),
-            summaries: QuantizedSummary::from(SparseDataset::from(summary)),
+            summaries: Some(QuantizedSummary::from(SparseDataset::from(summary))),
+            use_medoid_pruning: false,
+            medoid_postings: Box::default(),
         }
     }
 }

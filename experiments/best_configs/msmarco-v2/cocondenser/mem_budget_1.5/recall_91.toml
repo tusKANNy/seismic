@@ -1,4 +1,4 @@
-name = "cocondenser_recall_91"
+name = "cocondenser-mem_budget_1.5-recall_91"
 title = "Seismic Cocondenser - Recall 91%"
 description = "Optimized configuration for cocondenser targeting recall 91% from grid search"
 dataset = "Cocondenser on MS-MARCO"

@@ -30,9 +30,9 @@ query_ids =     "queries_ids.npy"
 index =         "seismic_index"
 
 [indexing_parameters]
-n-postings =            [2000, 3000, 4000]
-centroid-fraction =     [0.1, 0.2]
-summary-energy =        [0.4, 0.5]
+n-postings =            [1000, 1500, 2000, 3000, 4000]
+centroid-fraction =     [0.1, 0.2, 0.3]
+summary-energy =        [0.4, 0.5, 0.6]
 knn =                   [0]
 pruning-strategy =      ["global-threshold"] # Possible options are "coi-threshold", "global-threshold", "fixed-size". Default is "global-threshold"
 #alpha =                 [0.1, 0.15, 0.2] # needed only by coi-threshold
@@ -40,8 +40,8 @@ max-fraction =          [2.0, 3.0, 4.0, 6.0] # needed only by "global-threshold"
 clustering-algorithm =  ["random-kmeans-inverted-index-approx"] # Possible options are "random-kmeans", "random-kmeans-inverted-index", "random-kmeans-inverted-index-approx"
 kmeans-doc-cut =        [15]    # needed by "random-kmeans-inverted-index" and "random-kmeans-inverted-index-approx"
 # kmeans-pruning-factor = 0.005 # Only used by random-kmeans-inverted-index
-value-type =            ["f16", "dotvbyte"]
-min-cluster-size =      [2, 5, 10] 
+value-type =            ["f16", "dotpacking8-scalaru8"]
+min-cluster-size =      [5] 
 
 
 

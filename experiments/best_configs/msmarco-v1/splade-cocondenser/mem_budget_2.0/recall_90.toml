@@ -1,4 +1,4 @@
-name = "splade-cocodenser_recall_90"
+name = "splade-cocondenser-mem_budget_2.0-recall_90"
 title = "Seismic Splade-cocodenser - Recall 90%"
 description = "Optimized configuration for splade-cocodenser targeting recall 90% from grid search"
 dataset = "Splade-cocodenser on MS-MARCO"
@@ -8,7 +8,6 @@ k = 10
 n-runs = 1
 build = true
 metric = "RR@10"
-delete = true
 
 [folder]
 data = "~/knn_datasets/sparse_datasets/msmarco_v1_passage/cocondenser/data"
@@ -35,7 +34,7 @@ kmeans-pruning-factor = 0.0
 max-fraction = 3.0
 min-cluster-size = 2
 pruning-strategy = "global-threshold"
-value-type = "dotvbyte"
+value-type = "dotpacking8-scalaru8"
 
 [query]
 

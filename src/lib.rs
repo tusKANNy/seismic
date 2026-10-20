@@ -28,12 +28,14 @@ pub mod quantized_summary;
 pub use quantized_summary::QuantizedSummary;
 
 pub mod json_utils;
+pub mod value_types;
 // Vectorium now provides `SparseVectorView` / `SparseVectorOwned` with typed accessors.
 // Seismic uses those directly.
 pub mod utils;
 
 /// Type aliases for quantized fixed-point types (re-exported from vectorium).
 pub use vectorium::{FixedU8Q, FixedU16Q};
+pub use vectorium::{BlockedSparseEncoder, BlockedSparseDataset};
 
 #[cfg(feature = "python")]
 pub mod pylib;
@@ -43,6 +45,7 @@ use {
     pylib::SeismicDataset as PySeismicDataset,
     pylib::SeismicDatasetLV as PySeismicDatasetLV,
     pylib::SeismicIndex as PySeismicIndex,
+    pylib::SeismicIndexDotPacking8,
     pylib::SeismicIndexDotVByte,
     pylib::SeismicIndexLV as PySeismicIndexLV,
     pylib::SeismicIndexRaw,
@@ -63,6 +66,7 @@ fn seismic(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySeismicIndexLV>()?;
     m.add_class::<SeismicIndexRaw>()?;
     m.add_class::<SeismicIndexRawLV>()?;
+    m.add_class::<SeismicIndexDotPacking8>()?;
     m.add_class::<SeismicIndexDotVByte>()?;
     m.add_class::<PySeismicDataset>()?;
     m.add_class::<PySeismicDatasetLV>()?;

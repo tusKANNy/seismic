@@ -1,0 +1,43 @@
+name =          "grid_search_msmarco_v1_cocondenser_low_budget"
+title =         "Seismic Low Memory Budget on Cocondenser MS MARCO"
+description =   "Vanilla Seismic (no medoid) with reduced summary_energy — CAND-003 baseline. Sweeps summary_energy in [0.1, 0.4] to find the Pareto frontier at lower memory budgets. Intended for direct comparison against CAND-007A     (medoid + summary_energy=0.15) at matched space."
+dataset =       "Splade cocondenser on MS-MARCO"
+
+[settings]
+k =             10
+n-runs =        1
+build =         true
+metric =        "RR@10"
+delete =        true
+
+[folder]
+data =          "~/knn_datasets/sparse_datasets/msmarco_v1_passage/cocondenser/data"
+index =         "~/knn_indexes/sparse_datasets/msmarco_v1_passage/cocondenser/indexes"
+qrels_path =    "~/knn_datasets/sparse_datasets/msmarco_v1_passage/qrels.dev.small.tsv"
+experiment =    "./grid_low_budget"
+
+[filename]
+dataset =       "documents.bin"
+queries =       "queries.bin"
+groundtruth =   "groundtruth.tsv"
+doc_ids =       "doc_ids.npy"
+query_ids =     "queries_ids.npy"
+index =         "seismic_index"
+
+[indexing_parameters]
+n-postings =            [2000, 3000, 4000]
+centroid-fraction =     [0.05, 0.1, 0.2, 0.3, 0.4] 
+summary-energy =        [0.1, 0.15, 0.2, 0.3, 0.4] 
+knn =                   [0] # FIX
+pruning-strategy =      ["global-threshold"] # FIX
+max-fraction =          [2.0, 4.0, 6.0]
+clustering-algorithm =  ["random-kmeans-inverted-index-approx"] # FIX
+kmeans-doc-cut =        [15] # FIX
+value-type =            ["dotpacking8-scalaru8"] # FIX
+min-cluster-size =      [5] # FIX
+
+[querying_parameters]
+query-cut =             [4, 6, 7, 8, 10, 12]
+heap-factor =           [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.9, 1.0]
+knn =                   [0] # FIX
+first-sorted =          [true]

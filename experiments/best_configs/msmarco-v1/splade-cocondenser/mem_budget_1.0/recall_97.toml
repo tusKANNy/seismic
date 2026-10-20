@@ -1,4 +1,4 @@
-name = "_recall_97"
+name = "splade-cocondenser-mem_budget_1.0-recall_97"
 title = "Seismic  - Recall 97%"
 description = "Optimized configuration for  targeting recall 97% from grid search"
 dataset = " on MS-MARCO"
@@ -35,7 +35,7 @@ kmeans-pruning-factor = 0.0
 max-fraction = 6.0
 min-cluster-size = 5
 pruning-strategy = "global-threshold"
-value-type = "dotvbyte"
+value-type = "dotpacking8-scalaru8"
 
 [query]
 

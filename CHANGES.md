@@ -1,4 +1,72 @@
-# Longer token strings in the Python interface
+# Changes
+
+## 0.6.0
+
+Seismic moves to vectorium 0.11.0 (`main`, pinned at `ab18e9e`), the release of its `compression`
+branch, which drops the research-only encoders and adds DotPacking8, blocked and step-scalar sparse
+encoders.
+
+### Breaking changes
+
+- **Removed value types.** The value type (`--value-type` of the binaries, `value-type` in the
+  experiment TOMLs) selects how an index stores its values. vectorium 0.11 deleted some encoders,
+  so these names are no longer accepted:
+
+  | Removed value type | Use instead |
+  |---|---|
+  | `dotvbyte`, `dotvbyte-scalar`, `dotvbyte-optimistic`, `dotvbyte-optimistic-scalar` | `dotpacking8-scalaru8` |
+  | `dotpacking8-optimistic-scalar` | `dotpacking8-scalaru8` with component type `u32` |
+  | `dotpacking8-sparse-scalar`, `dotpacking8-centroid4bit`, `dotpackingsparse-f16`, `packed-centroid`, `packed-variable-uniform` | none (research-only encoders) |
+
+  There is no silent fallback: the binaries and `scripts/run_experiments.py` stop with an error
+  that names the replacement, e.g. `'dotvbyte': DotVByte was removed in vectorium 0.11; use
+  'dotpacking8-scalaru8' (u16 or u32 components)`. `dotpacking8-scalaru8` stores 8-bit codes with
+  one quantization step per component; against `dotvbyte` it is as fast or faster, uses 4–8% less
+  memory and has slightly higher recall.
+- **Python:** `SeismicIndexDotVByte` is renamed `SeismicIndexDotPacking8` (DotPacking8, 8-bit codes
+  with one step per component). The old name is kept as a placeholder whose `build`,
+  `build_from_dataset`, `load` and constructor raise a `RuntimeError` naming the replacement.
+- **Indexes built with 0.5.x must be rebuilt.**
+- **Rust API:** the generic bounds follow vectorium 0.11. Encoders must have `QueryParams = ()`
+  and conversions `Config = ()`.
+
+### Value types
+
+Every value type of vectorium 0.11 can be used to build and query an index:
+
+| Value type | Component types |
+|---|---|
+| `f32`, `f16`, `bf16`, `fixedu8`, `fixedu16` | `u16`, `u32` |
+| `scalaru8`, `scalaru16` (new: one quantization step per component) | `u16`, `u32` |
+| `blocked-sparse`, `blocked-sparse-scalaru8`, `blocked-sparse-scalaru16` (the last two new) | `u16` |
+| `dotpacking8-scalaru8`, `dotpacking8-scalaru16` (the latter new) | `u16`, `u32` (new) |
+| `dotpacking8-fixedu8`, `dotpacking8-f16`, `dotpacking8-scalar4bit` | `u16` |
+
+`dotpacking8-scalar` is still accepted as the old name of `dotpacking8-scalaru8`. The list lives
+in one place, `src/value_types.rs` (`VALUE_TYPES` and the `with_dataset_type!` macro), used by
+`build_inverted_index`, `perf_inverted_index` and `full_scan_inverted_index`.
+`full_scan_inverted_index` now takes any value type and a `--component-type` (default value type:
+`dotpacking8-scalaru8`).
+
+### Experiments
+
+- The experiment configs that used `dotvbyte` now use `dotpacking8-scalaru8`.
+- `scripts/run_experiments.py` runs on Python 3.14 (it no longer uses `ir_measures.parse_measure`,
+  broken there), and exits with code 1 when an experiment fails (it exited 0).
+
+### Performance (MS MARCO cocondenser, against 0.5.2; 0.5.3 and 0.5.4 did not change the query code)
+
+- Query time is unchanged or lower for `blocked-sparse` and the DotPacking8 encoders. This needed
+  vectorium `eb4ca45`: the 256-byte prefetch cap inherited from vectorium `main` slowed
+  `blocked-sparse` queries by up to 24% and DotPacking8 F16 by up to 9%; the cap is now 512 bytes.
+- `dotpacking8-scalaru8` against the `dotvbyte` it replaces: same query time or faster, 4–8% less
+  memory, recall slightly higher.
+- DotPacking8 indexes build about 20% faster.
+- Plain `f16` queries are 1–2% slower (cause not found).
+
+## 0.5.4
+
+### Longer token strings in the Python interface
 
 - **Token dtype widened from `U30` to `U100`.** `get_seismic_string()` now
   returns `'U100'` and every token-string argument of the Python classes
@@ -42,7 +110,9 @@
   `TypeError` that names the offending list entry.
   → `extract_tokens`, `extract_values` in `src/pylib/mod.rs`
 
-# Faster index construction
+## 0.5.2
+
+### Faster index construction
 
 Optimizations to the index build. None of them changes the built index: the
 produced posting lists, blocks, and summaries are identical to the previous

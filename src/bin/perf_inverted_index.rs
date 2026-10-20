@@ -9,12 +9,13 @@ use num_traits::FromPrimitive;
 
 use seismic::InvertedIndexBase;
 use seismic::index_traits::{ComponentFor, EncoderFor};
+use seismic::inverted_index::Knn;
+use seismic::utils::energy_preserving_cut;
+use seismic::with_dataset_type;
 use vectorium::IndexSerializer;
-
-use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::{
-    ComponentType, Dataset, Distance, DotProduct, PackedSparseDataset, SpaceUsage,
-    SparseVectorView, VectorEncoder, read_seismic_format,
+    ComponentType, Dataset, Distance, DotProduct, SpaceUsage, SparseVectorView, VectorEncoder,
+    read_seismic_format,
 };
 
 #[derive(Parser, Debug)]
@@ -62,12 +63,22 @@ pub struct Args {
     #[arg(default_value_t = 0)]
     n_knn: usize,
 
+    /// Serialized kNN graph (`.knn.seismic`) to attach to the loaded index, replacing any graph
+    /// the index was built with. `--n-knn` then selects how many of its neighbours to rescore.
+    ///
+    /// Attaching at load time is what lets one index be measured against several graphs without
+    /// a rebuild per (index, graph) pair.
+    #[clap(long, value_parser)]
+    knn_path: Option<String>,
+
     /// Whether to sort the first component by estimated dot products before search (see docs/RustUsage.md#using-the-rust-code).
     #[clap(short, long, action)]
     #[arg(default_value_t = false)]
     first_sorted: bool,
 
-    /// Optional query energy filter (see docs/RustUsage.md#using-the-rust-code).
+    /// Energy-preserving query pruning. When set, the number of query components to scan is
+    /// chosen per query as the smallest prefix (by decreasing value) whose cumulative mass
+    /// reaches this fraction of the query's total mass, overriding `query_cut`.
     #[clap(long, value_parser)]
     query_energy: Option<f32>,
 
@@ -76,7 +87,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type (`f16`, `bf16`, `f32`, `fixedu8`, or `fixedu16`); see docs/RustUsage.md#using-the-rust-code for recommendations.
+    /// Value type the index was built with (`f32`, `f16`, `bf16`, `fixedu8`, `fixedu16`, `scalaru8`, `scalaru16`, `blocked-sparse`, `blocked-sparse-scalaru8`, `blocked-sparse-scalaru16`, `dotpacking8-fixedu8`, `dotpacking8-scalaru8`, `dotpacking8-scalaru16`, `dotpacking8-f16`, or `dotpacking8-scalar4bit`; see `seismic::value_types`); see docs/RustUsage.md#using-the-rust-code for recommendations.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -90,52 +101,6 @@ impl Args {
     pub fn value_type(&self) -> &str {
         &self.value_type
     }
-}
-
-macro_rules! match_component_value {
-    ($component:expr, $value:expr, $macro_name:ident) => {
-        use half::{bf16, f16};
-        use seismic::{FixedU16Q, FixedU8Q};
-
-        match ($component, $value) {
-            ("u16", "f16") => {
-                $macro_name!(u16, f16);
-            }
-            ("u16", "bf16") => {
-                $macro_name!(u16, bf16);
-            }
-            ("u16", "f32") => {
-                $macro_name!(u16, f32);
-            }
-            ("u16", "fixedu8") => {
-                $macro_name!(u16, FixedU8Q);
-            }
-            ("u16", "fixedu16") => {
-                $macro_name!(u16, FixedU16Q);
-            }
-            ("u32", "f16") => {
-                $macro_name!(u32, f16);
-            }
-            ("u32", "bf16") => {
-                $macro_name!(u32, bf16);
-            }
-            ("u32", "f32") => {
-                $macro_name!(u32, f32);
-            }
-            ("u32", "fixedu8") => {
-                $macro_name!(u32, FixedU8Q);
-            }
-            ("u32", "fixedu16") => {
-                $macro_name!(u32, FixedU16Q);
-            }
-        _ => {
-            eprintln!(
-                "Error: component-type must be either 'u16' or 'u32', value-type must be 'f16', 'bf16', 'f32', 'fixedu16', or 'fixedu8'"
-            );
-            std::process::exit(1);
-        }
-        }
-    };
 }
 
 pub fn run_performance_test_generic<S>(args: Args)
@@ -157,9 +122,13 @@ where
 
     let nknn = args.n_knn;
 
-    let inverted_index: InvertedIndexBase<S> =
+    let mut inverted_index: InvertedIndexBase<S> =
         InvertedIndexBase::load_index(index_path.unwrap().as_str())
             .unwrap_or_else(|err| panic!("Failed to load index: {err:?}"));
+
+    if let Some(knn_path) = &args.knn_path {
+        inverted_index.add_knn(Knn::new_from_serialized(knn_path, None));
+    }
 
     let queries =
         read_seismic_format::<ComponentFor<S>, f32, DotProduct>(&args.query_file.unwrap()).unwrap();
@@ -179,7 +148,15 @@ where
         inverted_index.nnz() / inverted_index.len()
     );
 
+    match args.query_energy {
+        Some(energy_fraction) => println!(
+            "Query pruning: energy-preserving, fraction {energy_fraction} (query-cut ignored)"
+        ),
+        None => println!("Query pruning: fixed, top-{query_cut} components"),
+    }
+
     let mut results = Vec::with_capacity(n_queries);
+    let mut energy_buf = Vec::new();
 
     let time = Instant::now();
     for _ in 0..n_runs {
@@ -189,10 +166,20 @@ where
             let query_view =
                 SparseVectorView::new(components_values.components(), components_values.values());
             let query = query_view;
+
+            let effective_query_cut = match args.query_energy {
+                Some(energy_fraction) => energy_preserving_cut(
+                    components_values.values(),
+                    energy_fraction,
+                    &mut energy_buf,
+                ),
+                None => query_cut,
+            };
+
             let cur_results = inverted_index.search(
                 query,
                 args.k,
-                query_cut,
+                effective_query_cut,
                 heap_factor,
                 nknn,
                 args.first_sorted,
@@ -237,33 +224,22 @@ where
 
 pub fn main() {
     let args = Args::parse();
+    let component_type = args.component_type().to_owned();
+    let value_type = args.value_type().to_owned();
 
-    if args.value_type() == "dotvbyte" {
-        if args.component_type() != "u16" {
-            eprintln!("Error: dotvbyte is only supported with component-type 'u16'.");
-            std::process::exit(1);
-        }
-
-        run_performance_test_generic::<PackedSparseDataset<DotVByteFixedU8Encoder>>(args);
-        return;
+    macro_rules! run_performance_test {
+        ($C:ty, $T:ty, $route:ident) => {{
+            println!("Using {component_type} component type with {value_type} value type");
+            run_performance_test_generic::<$T>(args)
+        }};
     }
 
-    macro_rules! run_performance_test_macro {
-        ($C:ty, $V:ty) => {
-            println!(
-                "Using {} component type with {} value type",
-                stringify!($C),
-                stringify!($V)
-            );
-            run_performance_test_generic::<
-                vectorium::PlainSparseDataset<$C, $V, vectorium::DotProduct>,
-            >(args);
-        };
+    if let Err(msg) = with_dataset_type!(
+        component_type.as_str(),
+        value_type.as_str(),
+        run_performance_test
+    ) {
+        eprintln!("Error: {msg}");
+        std::process::exit(1);
     }
-
-    match_component_value!(
-        args.component_type(),
-        args.value_type(),
-        run_performance_test_macro
-    );
 }

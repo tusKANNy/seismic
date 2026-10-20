@@ -24,7 +24,12 @@ Seismic has several parameters that control the space/time trade-offs when build
 - `-i, --input-file` path to the source collection file (`documents.bin`).
 - `-o, --output-file` output index base path; the binary appends `.index.seismic`.
 - `-n, --n-postings` defines the posting list size, representing the average number of postings stored per list (default: 6000).
-- `-s, --summary-energy` controls the summary size, preserving a fraction of the overall energy for each summary (default: 0.5).
+- `--summarization-strategy` selects how each block is summarized for pruning at query time. Options: `energy-preserving` (default), `medoid`, `fixed-size`.
+  - `energy-preserving`: the summary of a block keeps the largest components up to a fraction `--summary-energy` of the block energy.
+  - `medoid`: no summary is built; the document of the block closest to the block centroid (its medoid) is stored apart from the rest of the block and scored against the query in place of a summary. Uses less space than a summary, with no quantization error (the medoid is a real document, so it is also returned with its exact score).
+  - `fixed-size`: the summary keeps the `--n-components` largest components of the block.
+- `-s, --summary-energy` controls the summary size for `energy-preserving`, preserving a fraction of the overall energy for each summary (default: 0.5).
+- `--n-components` number of components of each summary for `fixed-size` (default: 0).
 - `--centroid-fraction` determines the number of centroids per posting list, capped at a fraction of the posting list length (default: 0.1).
 - `--clustering-algorithm` selects the algorithm to cluster postings within each posting list. Options: `random-kmeans`, `random-kmeans-inverted-index`, `random-kmeans-inverted-index-approx`.
 - `--pruning-strategy` selects the posting list pruning strategy. Options: `global-threshold`, `coi-threshold`, `fixed-size`.
@@ -32,12 +37,16 @@ Seismic has several parameters that control the space/time trade-offs when build
 - `--kmeans-doc-cut` number of top components retained while clustering (default: 15). Used by `random-kmeans-inverted-index` and `random-kmeans-inverted-index-approx`.
 - `--kmeans-pruning-factor` pruning factor used by the random k-means blocking (default: 0.005). Used by `random-kmeans-inverted-index` only.
 - `--min-cluster-size` minimum cluster size allowed (default: 2).
-- `-a, --alpha` fraction of L1 mass preserved by the COI pruning strategy (default: 0.15).
+- `-a, --alpha` parameter of the `coi-threshold` pruning strategy (default: 0.15): each posting list keeps only its `alpha * len` largest entries, further capped at `n-postings`. This is the Set α-MSS of the paper; in expectation it preserves a fraction `alpha` of the L1 mass of each vector.
 - `-m, --max-fraction` maximum posting list length as a factor of `n_postings` (default: 1.5).
 - `--knn` number of neighbors stored per vector for the k-NN graph (default: 0, i.e., disabled).
 - `--knn-path` path to a precomputed nearest-neighbor file.
 - `--component-type` component type: `u16` (default) or `u32` for large vocabularies.
-- `-v, --value-type` value type: `f16` (default), `bf16`, `f32`, `fixedu8`, `fixedu16`, or `dotvbyte`.
+- `-v, --value-type` value type: `f16` (default), `bf16`, `f32`, `fixedu8`, `fixedu16`, `scalaru8`, `scalaru16`, or one of the packed formats below (the list, with the component types each one supports, is in `src/value_types.rs`). `f16`, `bf16` and `fixedu16` convert the values before building; every other format builds the index with plain `f32` values and converts the forward index at the end, so every format accepts the same build parameters. `perf_inverted_index` must be run with the same `--component-type` and `--value-type` used to build the index.
+  - `scalaru8`, `scalaru16`: plain sparse vectors with 8/16-bit codes and one quantization step trained per component. `u16` and `u32`.
+  - `blocked-sparse`, `blocked-sparse-scalaru8`, `blocked-sparse-scalaru16`: vectors packed in cache-line-aligned blocks with `f16` values, or 8/16-bit codes with one step per component. `u16` only.
+  - `dotpacking8-fixedu8`, `dotpacking8-scalaru8`, `dotpacking8-scalaru16`, `dotpacking8-f16`, `dotpacking8-scalar4bit`: the DotPacking8 component codec (components reordered by decreasing document frequency and packed in 8-bit gaps) with the values stored as the suffix says: 8-bit fixed point, 8/16-bit codes with one step per component, `f16`, or 4-bit codes with one step per component. `u16`; `dotpacking8-scalaru8` and `dotpacking8-scalaru16` also take `u32`, for which they use the bridged encoder that keeps the 8-bit gaps and inserts bridge entries for the rare larger gaps. `dotpacking8-scalar` is the former name of `dotpacking8-scalaru8` and is still accepted.
+  - Removed with vectorium 0.11: `dotvbyte*` (use `dotpacking8-scalaru8`), `dotpacking8-optimistic-scalar` (use `dotpacking8-scalaru8` with `u32`), `dotpacking8-sparse-scalar`, `dotpacking8-centroid4bit`, `dotpackingsparse-f16`, `packed-centroid`, `packed-variable-uniform`. Indexes serialized with them, and DotPacking8 indexes built before vectorium 0.11, must be rebuilt.
 
 For **Splade on MS MARCO**, good choices are:
 ```
@@ -159,7 +168,7 @@ assert_eq!(result[0].1, 1);
 ### Configuration Parameters
 Key parameters to experiment with:
 - `n_postings` (`PruningStrategy::GlobalThreshold`) defines the posting list size.
-- `summary_energy` (`SummarizationStrategy::EnergyPreserving`) controls summary size.
+- `summary_energy` (`SummarizationStrategy::EnergyPreserving`) controls summary size; `SummarizationStrategy::Medoid` replaces the summaries with the medoid of each block, and `SummarizationStrategy::FixedSize` keeps `n_components` per summary.
 - `centroid_fraction` (`BlockingStrategy::RandomKmeans`) sets centroids per posting list.
 
 For serialization/deserialization examples, see:

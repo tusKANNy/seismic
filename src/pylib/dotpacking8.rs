@@ -12,30 +12,32 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
-use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
-use vectorium::{IndexSerializer, PackedSparseDataset, ScalarSparseQuantizer, SparseDataset};
+use vectorium::{
+    DotPacking8U16ScalarU8Dataset, IndexSerializer, ScalarSparseQuantizer, SparseDataset,
+};
 
 use super::{SeismicDataset, extract_tokens, extract_tokens_list, extract_values_list};
 
 type IndexQuantizer = ScalarSparseQuantizer<u16, f32, f16, vectorium::DotProduct>;
 type IndexDataset = SparseDataset<IndexQuantizer>;
-type DotVByteDataset = PackedSparseDataset<DotVByteFixedU8Encoder>;
+type DotPacking8Dataset = DotPacking8U16ScalarU8Dataset;
 
-/// A Python wrapper around a SeismicIndex using DotVByte compression.
+/// A Python wrapper around a SeismicIndex using DotPacking8 compression.
 ///
-/// DotVByte is a compressed encoding for sparse vectors that reduces memory usage
-/// compared to standard u16/f16 storage. It only supports u16 component types.
+/// DotPacking8 stores sparse vectors with 8-bit packed components and 8-bit values scalar
+/// quantized with one step per component, which reduces memory usage compared to standard
+/// u16/f16 storage. It only supports u16 component types.
 ///
 /// The build methods (`build`, `build_from_dataset`) first construct a standard index
-/// and then transparently convert it to DotVByte format. Once built, the index supports
+/// and then transparently convert it to DotPacking8 format. Once built, the index supports
 /// the same search operations as `SeismicIndex`.
-#[pyclass(name = "SeismicIndexDotVByte")]
-pub struct SeismicIndexDotVByte {
-    index: Index<DotVByteDataset>,
+#[pyclass(name = "SeismicIndexDotPacking8")]
+pub struct SeismicIndexDotPacking8 {
+    index: Index<DotPacking8Dataset>,
 }
 
 #[pymethods]
-impl SeismicIndexDotVByte {
+impl SeismicIndexDotPacking8 {
     pub fn get_doc_ids_in_postings(&self, list_id: usize) -> PyResult<Vec<usize>> {
         Ok(self.index.get_doc_ids_in_postings(list_id))
     }
@@ -69,16 +71,16 @@ impl SeismicIndexDotVByte {
         self.index.print_space_usage_byte();
     }
 
-    /// Load a previously saved DotVByte index from disk.
+    /// Load a previously saved DotPacking8 index from disk.
     #[staticmethod]
     #[pyo3(signature = (index_path))]
     #[pyo3(text_signature = "(index_path)")]
-    pub fn load(index_path: &str) -> PyResult<SeismicIndexDotVByte> {
-        let index: Index<DotVByteDataset> = Index::load_index(index_path).map_err(|e| {
+    pub fn load(index_path: &str) -> PyResult<SeismicIndexDotPacking8> {
+        let index: Index<DotPacking8Dataset> = Index::load_index(index_path).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to load index: {:?}", e))
         })?;
 
-        Ok(SeismicIndexDotVByte { index })
+        Ok(SeismicIndexDotPacking8 { index })
     }
 
     /// Save the index to disk in binary format.
@@ -98,11 +100,11 @@ impl SeismicIndexDotVByte {
         Ok(())
     }
 
-    //TODO: This method is not implemented for DotVByte.
-    // The reason is that PackedSparseDataset<DotVByteFixedU8Encoder> implements
+    //TODO: This method is not implemented for DotPacking8.
+    // The reason is that PackedSparseDataset<DotPacking8U16ScalarU8Encoder> implements
     // SeismicSearchDataset but NOT SeismicBuildDataset. If we remove the trait from
     // the method new of the KNN struct, we cannot access .components() and .values()
-    // Probably there is a workaround but if a user want to use a KNN graph for a DotVByte index,
+    // Probably there is a workaround but if a user want to use a KNN graph for a DotPacking8 index,
     // he/she can do it with the standard SeismicIndex.
 
     // #[pyo3(text_signature = "(self, nknn)")]
@@ -142,9 +144,9 @@ impl SeismicIndexDotVByte {
         self.index.add_knn(knn);
     }
 
-    /// Build a DotVByte-compressed index from a `.jsonl` or `.tar.gz` dataset file.
+    /// Build a DotPacking8-compressed index from a `.jsonl` or `.tar.gz` dataset file.
     ///
-    /// Internally builds a standard u16 index and then converts it to DotVByte format.
+    /// Internally builds a standard u16 index and then converts it to DotPacking8 format.
     #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     #[pyo3(signature = (input_path, n_postings=3500, centroid_fraction=0.1, min_cluster_size=2, summary_energy=0.4, max_fraction=1.5, doc_cut=15, nknn=0, knn_path=None, batched_indexing=None, input_token_to_id_map=None, load_content=true, num_threads=0))]
@@ -165,7 +167,7 @@ impl SeismicIndexDotVByte {
         input_token_to_id_map: Option<std::collections::HashMap<String, usize>>,
         load_content: bool,
         num_threads: usize,
-    ) -> PyResult<SeismicIndexDotVByte> {
+    ) -> PyResult<SeismicIndexDotPacking8> {
         let _ = batched_indexing;
         rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
@@ -205,17 +207,17 @@ impl SeismicIndexDotVByte {
             ))
         })?;
 
-        println!("Converting to DotVByte...");
-        let dotvbyte_index = standard_index.convert_dataset_into::<DotVByteDataset>();
+        println!("Converting to DotPacking8...");
+        let dotpacking8_index = standard_index.convert_dataset_into::<DotPacking8Dataset>();
 
-        Ok(SeismicIndexDotVByte {
-            index: dotvbyte_index,
+        Ok(SeismicIndexDotPacking8 {
+            index: dotpacking8_index,
         })
     }
 
-    /// Build a DotVByte-compressed index from an in-memory SeismicDataset.
+    /// Build a DotPacking8-compressed index from an in-memory SeismicDataset.
     ///
-    /// Internally builds a standard u16 index and then converts it to DotVByte format.
+    /// Internally builds a standard u16 index and then converts it to DotPacking8 format.
     #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     #[pyo3(signature = (
@@ -246,7 +248,7 @@ impl SeismicIndexDotVByte {
         knn_path: Option<String>,
         batched_indexing: Option<usize>,
         num_threads: usize,
-    ) -> PyResult<SeismicIndexDotVByte> {
+    ) -> PyResult<SeismicIndexDotPacking8> {
         let _ = batched_indexing;
         rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
@@ -275,11 +277,11 @@ impl SeismicIndexDotVByte {
 
         let standard_index: Index<IndexDataset> = Index::from_dataset(dataset.dataset, config);
 
-        println!("Converting to DotVByte...");
-        let dotvbyte_index = standard_index.convert_dataset_into::<DotVByteDataset>();
+        println!("Converting to DotPacking8...");
+        let dotpacking8_index = standard_index.convert_dataset_into::<DotPacking8Dataset>();
 
-        Ok(SeismicIndexDotVByte {
-            index: dotvbyte_index,
+        Ok(SeismicIndexDotPacking8 {
+            index: dotpacking8_index,
         })
     }
 
@@ -397,5 +399,53 @@ impl SeismicIndexDotVByte {
             .collect();
 
         Ok(results)
+    }
+}
+
+const DOTVBYTE_REMOVED: &str = "SeismicIndexDotVByte was removed in seismic 0.6.0 (vectorium 0.11 dropped the DotVByte \
+     encoder). Use SeismicIndexDotPacking8, which has the same API. Indexes saved by \
+     SeismicIndexDotVByte cannot be loaded: rebuild them with SeismicIndexDotPacking8.";
+
+/// Placeholder for the class removed in 0.6.0: every entry point raises a `RuntimeError` that
+/// names the replacement, instead of the `AttributeError` an absent class would give.
+#[pyclass(name = "SeismicIndexDotVByte")]
+pub struct SeismicIndexDotVByte;
+
+#[pymethods]
+impl SeismicIndexDotVByte {
+    #[new]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn new(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(DOTVBYTE_REMOVED))
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn load(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(DOTVBYTE_REMOVED))
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn build(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(DOTVBYTE_REMOVED))
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn build_from_dataset(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(DOTVBYTE_REMOVED))
     }
 }

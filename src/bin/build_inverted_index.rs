@@ -1,15 +1,12 @@
 use clap::Parser;
-use half::{bf16, f16};
 use num_traits::FromPrimitive;
-use seismic::FixedU8Q;
-use seismic::FixedU16Q;
+use seismic::InvertedIndexBase;
 use seismic::PlainInvertedIndex;
-use seismic::ScalarInvertedIndex;
-use seismic::ScalarSparseDataset;
 use seismic::configurations::{
     BlockingStrategy, ClusteringAlgorithm, Configuration, KnnConfiguration, PruningStrategy,
     SummarizationStrategy,
 };
+use seismic::with_dataset_type;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -17,10 +14,8 @@ use std::hash::Hash;
 use std::time::Instant;
 
 use vectorium::dataset::ConvertFrom;
-use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
 use vectorium::{
-    ComponentType, Dataset, DotProduct, IndexSerializer, PackedSparseDataset, SpaceUsage,
-    read_seismic_format,
+    ComponentType, Dataset, DotProduct, IndexSerializer, SpaceUsage, read_seismic_format,
 };
 
 // clap does not support enums with associated values; keep CLI-only types in the bin.
@@ -42,6 +37,16 @@ enum ClusteringAlgorithmClap {
     RandomKmeansInvertedIndex,
     #[default]
     RandomKmeansInvertedIndexApprox,
+}
+
+// clap does not support enums with associated values; keep CLI-only types in the bin.
+#[derive(clap::ValueEnum, Default, Debug, Clone)]
+#[clap(rename_all = "kebab-case")]
+enum SummarizationStrategyClap {
+    #[default]
+    EnergyPreserving,
+    Medoid,
+    FixedSize,
 }
 
 #[derive(Parser, Debug)]
@@ -70,10 +75,19 @@ pub struct Args {
     #[arg(default_value_t = 0.1)]
     centroid_fraction: f32,
 
+    /// Summarization strategy: energy-preserving (default), medoid, or fixed-size.
+    #[clap(long, value_parser, default_value = "energy-preserving")]
+    summarization_strategy: SummarizationStrategyClap,
+
     /// Summary energy fraction preserved; see docs/RustUsage.md#using-the-rust-code (Executing Queries section).
     #[clap(short, long, value_parser)]
     #[arg(default_value_t = 0.5)]
     summary_energy: f32,
+
+    /// Number of summary components for fixed-size summarization.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 0)]
+    n_components: usize,
 
     /// Selects the clustering algorithm used to cluster postings in each posting list; see docs/RustUsage.md#using-the-rust-code.
     #[clap(long, value_parser)]
@@ -98,7 +112,7 @@ pub struct Args {
     #[arg(default_value_t = 2)]
     min_cluster_size: usize,
 
-    /// Regulates the fraction of L1 mass preserved by the COI pruning strategy; see docs/RustUsage.md#using-the-rust-code.
+    /// Fraction of each posting list kept by the coi-threshold pruning strategy (top `alpha * len` entries, capped at `n_postings`); see docs/RustUsage.md#using-the-rust-code.
     #[clap(short, long, value_parser)]
     #[arg(default_value_t = 0.15)]
     alpha: f32,
@@ -122,7 +136,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type: f16, bf16, f32, fixedu16, fixedu8, or dotvbyte; see docs/RustUsage.md#using-the-rust-code for quantization choices.
+    /// Value type: f32, f16, bf16, fixedu8, fixedu16, scalaru8, scalaru16, blocked-sparse, blocked-sparse-scalaru8, blocked-sparse-scalaru16, dotpacking8-fixedu8, dotpacking8-scalaru8, dotpacking8-scalaru16, dotpacking8-f16, or dotpacking8-scalar4bit (see `seismic::value_types` for the component types each supports); see docs/RustUsage.md#using-the-rust-code for quantization choices.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -160,6 +174,16 @@ fn build_config(args: &Args) -> Configuration {
         },
     };
 
+    let summarization = match args.summarization_strategy {
+        SummarizationStrategyClap::EnergyPreserving => SummarizationStrategy::EnergyPreserving {
+            summary_energy: args.summary_energy,
+        },
+        SummarizationStrategyClap::Medoid => SummarizationStrategy::Medoid,
+        SummarizationStrategyClap::FixedSize => SummarizationStrategy::FixedSize {
+            n_components: args.n_components,
+        },
+    };
+
     Configuration::default()
         .pruning_strategy(pruning)
         .blocking_strategy(BlockingStrategy::RandomKmeans {
@@ -167,9 +191,7 @@ fn build_config(args: &Args) -> Configuration {
             min_cluster_size: args.min_cluster_size,
             clustering_algorithm: clustering,
         })
-        .summarization_strategy(SummarizationStrategy::EnergyPreserving {
-            summary_energy: args.summary_energy,
-        })
+        .summarization_strategy(summarization)
         .knn(knn_config)
 }
 
@@ -183,6 +205,18 @@ where
         + Serialize
         + DeserializeOwned,
 {
+    let dataset = read_dataset::<C>(args);
+    let config = build_config(args);
+    println!("\nBuilding the index...");
+    println!("{:?}", config);
+
+    PlainInvertedIndex::<C, f32>::build(dataset, config)
+}
+
+fn read_dataset<C>(args: &Args) -> vectorium::PlainSparseDataset<C, f32, DotProduct>
+where
+    C: ComponentType + FromPrimitive,
+{
     let dataset =
         read_seismic_format::<C, f32, DotProduct>(args.input_file.as_ref().unwrap()).unwrap();
 
@@ -192,12 +226,7 @@ where
         "Avg number of components: {:.2}",
         dataset.nnz() as f32 / dataset.len() as f32
     );
-
-    let config = build_config(args);
-    println!("\nBuilding the index...");
-    println!("{:?}", config);
-
-    PlainInvertedIndex::<C, f32>::build(dataset, config)
+    dataset
 }
 
 fn write_index<T>(index: T, output_file: &str, elapsed: Instant)
@@ -218,107 +247,43 @@ where
     println!("Total time {} secs", build_time + save_time);
 }
 
-fn build_for_component<C>(args: &Args)
-where
-    C: ComponentType
-        + vectorium::ComponentType
-        + SpaceUsage
-        + Hash
-        + FromPrimitive
-        + Serialize
-        + DeserializeOwned,
-{
-    let time = Instant::now();
-    let dataset_f32 =
-        read_seismic_format::<C, f32, DotProduct>(args.input_file.as_ref().unwrap()).unwrap();
-
-    println!("Number of Vectors: {}", dataset_f32.len());
-    println!("Number of Dimensions: {}", dataset_f32.input_dim());
-    println!(
-        "Avg number of components: {:.2}",
-        dataset_f32.nnz() as f32 / dataset_f32.len() as f32
-    );
-
-    let config = build_config(args);
-    println!("\nBuilding the index...");
-    println!("{:?}", config);
-
-    match args.value_type.as_str() {
-        "f32" => write_index(
-            PlainInvertedIndex::<C, f32>::build(dataset_f32, config),
-            args.output_file.as_ref().unwrap(),
-            time,
-        ),
-        "f16" => {
-            let dataset = ScalarSparseDataset::<C, f32, f16, DotProduct>::convert_from(dataset_f32);
-            write_index(
-                ScalarInvertedIndex::<C, f32, f16>::build(dataset, config),
-                args.output_file.as_ref().unwrap(),
-                time,
-            );
-        }
-        "bf16" => {
-            let dataset =
-                ScalarSparseDataset::<C, f32, bf16, DotProduct>::convert_from(dataset_f32);
-            write_index(
-                ScalarInvertedIndex::<C, f32, bf16>::build(dataset, config),
-                args.output_file.as_ref().unwrap(),
-                time,
-            );
-        }
-        "fixedu16" => {
-            let dataset =
-                ScalarSparseDataset::<C, f32, FixedU16Q, DotProduct>::convert_from(dataset_f32);
-            write_index(
-                ScalarInvertedIndex::<C, f32, FixedU16Q>::build(dataset, config),
-                args.output_file.as_ref().unwrap(),
-                time,
-            );
-        }
-        "fixedu8" => {
-            write_index(
-                ScalarInvertedIndex::<C, f32, FixedU8Q>::convert_dataset_from(
-                    PlainInvertedIndex::<C, f32>::build(dataset_f32, config),
-                ),
-                args.output_file.as_ref().unwrap(),
-                time,
-            )
-        }
-        _ => {
-            eprintln!("Error: value-type must be 'f16', 'bf16', 'f32', 'fixedu16', or 'fixedu8'");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn build_dotvbyte(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotvbyte requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotVByteFixedU8Encoder>>();
-
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
 fn main() {
     let args = Args::parse();
+    let time = Instant::now();
+    let output_file = args.output_file.clone().unwrap();
 
-    if args.value_type == "dotvbyte" {
-        build_dotvbyte(&args);
-        return;
+    // `$C` is the component type, `$T` the dataset of the index; see `seismic::value_types`
+    // for the meaning of the three routes.
+    macro_rules! build {
+        ($C:ty, $T:ty, plain) => {
+            write_index(build_base_index::<$C>(&args), &output_file, time)
+        };
+        ($C:ty, $T:ty, quantize_first) => {{
+            let dataset = <$T>::convert_from(read_dataset::<$C>(&args), ());
+            let config = build_config(&args);
+            println!("\nBuilding the index...");
+            println!("{:?}", config);
+            write_index(
+                InvertedIndexBase::<$T>::build(dataset, config),
+                &output_file,
+                time,
+            )
+        }};
+        ($C:ty, $T:ty, convert_after) => {
+            write_index(
+                build_base_index::<$C>(&args).convert_dataset_into::<$T>(),
+                &output_file,
+                time,
+            )
+        };
     }
 
-    match args.component_type.as_str() {
-        "u16" => build_for_component::<u16>(&args),
-        "u32" => build_for_component::<u32>(&args),
-        _ => {
-            eprintln!("Error: component-type must be either 'u16' or 'u32'");
-            std::process::exit(1);
-        }
+    if let Err(msg) = with_dataset_type!(
+        args.component_type.as_str(),
+        args.value_type.as_str(),
+        build
+    ) {
+        eprintln!("Error: {msg}");
+        std::process::exit(1);
     }
 }

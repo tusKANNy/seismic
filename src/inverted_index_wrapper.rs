@@ -337,7 +337,7 @@ where
 
     pub fn convert_dataset_into<T>(self) -> SeismicIndex<T>
     where
-        T: Dataset + SparseData + ConvertFrom<S> + SpaceUsage,
+        T: Dataset + SparseData + ConvertFrom<S, Config = ()> + SpaceUsage,
         EncoderFor<T>: SparseDataEncoder<OutputComponentType = ComponentFor<S>>,
         ComponentFor<T>: SpaceUsage,
     {

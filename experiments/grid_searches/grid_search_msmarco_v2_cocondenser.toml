@@ -40,7 +40,7 @@ max-fraction =          [2.0, 3.0, 4.0, 6.0] # needed only by "global-threshold"
 clustering-algorithm =  ["random-kmeans-inverted-index-approx"] # Possible options are "random-kmeans", "random-kmeans-inverted-index", "random-kmeans-inverted-index-approx"
 kmeans-doc-cut =        [15]    # needed by "random-kmeans-inverted-index" and "random-kmeans-inverted-index-approx"
 # kmeans-pruning-factor = 0.005 # Only used by random-kmeans-inverted-index
-value-type =            ["f16", "dotvbyte"]
+value-type =            ["f16", "dotpacking8-scalaru8"]
 min-cluster-size =      [2, 10, 100] 
 
 
