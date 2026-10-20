@@ -426,3 +426,51 @@ impl SeismicIndexDotPacking8 {
         results
     }
 }
+
+const DOTVBYTE_REMOVED: &str = "SeismicIndexDotVByte was removed in seismic 0.6.0 (vectorium 0.11 dropped the DotVByte \
+     encoder). Use SeismicIndexDotPacking8, which has the same API. Indexes saved by \
+     SeismicIndexDotVByte cannot be loaded: rebuild them with SeismicIndexDotPacking8.";
+
+/// Placeholder for the class removed in 0.6.0: every entry point raises a `RuntimeError` that
+/// names the replacement, instead of the `AttributeError` an absent class would give.
+#[pyclass(name = "SeismicIndexDotVByte")]
+pub struct SeismicIndexDotVByte;
+
+#[pymethods]
+impl SeismicIndexDotVByte {
+    #[new]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn new(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(DOTVBYTE_REMOVED))
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn load(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(DOTVBYTE_REMOVED))
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn build(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(DOTVBYTE_REMOVED))
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn build_from_dataset(
+        _args: &Bound<'_, pyo3::types::PyTuple>,
+        _kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<Self> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(DOTVBYTE_REMOVED))
+    }
+}

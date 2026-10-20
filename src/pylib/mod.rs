@@ -22,8 +22,8 @@ use vectorium::{
     ScalarSparseQuantizer, SparseDataset, SparseVectorView,
 };
 
-const MAX_TOKEN_LEN: usize = 30;
-const SEISMIC_STRING: &str = "U30";
+const MAX_TOKEN_LEN: usize = 100;
+const SEISMIC_STRING: &str = "U100";
 
 type IndexQuantizer<C> = ScalarSparseQuantizer<C, f32, f16, DotProduct>;
 type IndexDataset<C> = SparseDataset<IndexQuantizer<C>>;
@@ -1155,7 +1155,7 @@ macro_rules! impl_seismic_index_raw {
 mod dataset; // -> import macro from pylib/dataset.rs
 
 mod dotpacking8;
-pub use dotpacking8::SeismicIndexDotPacking8;
+pub use dotpacking8::{SeismicIndexDotPacking8, SeismicIndexDotVByte};
 
 impl_seismic_dataset!(SeismicDataset, "SeismicDataset", u16);
 impl_seismic_dataset!(SeismicDatasetLV, "SeismicDatasetLV", u32);

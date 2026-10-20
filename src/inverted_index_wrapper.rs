@@ -719,6 +719,22 @@ where
             .sorted_by_key(|(c, _)| *c);
         let (components, values): (Vec<_>, Vec<_>) = sorted_components_values.unzip();
 
+        if let Some(dup) = components.windows(2).find(|w| w[0] == w[1]) {
+            let token = self
+                .token_to_id_map
+                .iter()
+                .find(|(_, id)| C::try_from(**id).ok() == Some(dup[0]))
+                .map(|(t, _)| t.as_str())
+                .unwrap_or("?");
+            panic!(
+                "Document {} has duplicate token {:?}. Tokens are fixed-width strings on the \
+                 Python side (see get_seismic_string()), so distinct tokens longer than that \
+                 width are truncated onto the same key.",
+                self.document_mapping.last().unwrap(),
+                token
+            );
+        }
+
         self.sparse_dataset.push(SparseVectorView::new(
             components.as_slice(),
             values.as_slice(),
