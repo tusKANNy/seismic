@@ -37,10 +37,10 @@ num-traits = "0.2"
 pyo3 = { version = "0.26", features = ["extension-module"], optional = true }
 numpy = { version = "0.26", optional = true }
 indicatif = { version = "0.18", features = ["rayon"] }
-# vectorium 0.10.0 (branch `compression`): DotPacking8, blocked and step-scalar sparse encoders.
+# vectorium 0.11.0 (main): DotPacking8, blocked and step-scalar sparse encoders.
 # Pinned to a revision because Cargo.lock is gitignored: unpinned, a fresh checkout resolves to
 # whatever the branch is that day.
-vectorium = { git = "https://github.com/TusKANNy/vectorium.git", rev = "dc83fbd2abb9d7e34d7b71bb9ef63824ce073cbc" }
+vectorium = { git = "https://github.com/TusKANNy/vectorium.git", rev = "ab18e9ecff6e58a9a60b5faf99a53beab86b9924" }
 serde_json = "1.0"
 flate2 = "1.1"
 tar = "0.4"

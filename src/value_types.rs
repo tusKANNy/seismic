@@ -65,12 +65,12 @@ pub const VALUE_TYPES: &[&str] = &[
     "dotpacking8-scalar4bit",
 ];
 
-/// For a value type that existed before vectorium 0.10 and was removed, what to use instead.
+/// For a value type that existed before vectorium 0.11 and was removed, what to use instead.
 pub fn removed_value_type_hint(value_type: &str) -> Option<&'static str> {
     match value_type {
         "dotvbyte" | "dotvbyte-scalar" | "dotvbyte-optimistic" | "dotvbyte-optimistic-scalar" => {
             Some(
-                "DotVByte was removed in vectorium 0.10; use 'dotpacking8-scalaru8' (u16 or u32 components)",
+                "DotVByte was removed in vectorium 0.11; use 'dotpacking8-scalaru8' (u16 or u32 components)",
             )
         }
         "dotpacking8-optimistic-scalar" => Some(
@@ -81,7 +81,7 @@ pub fn removed_value_type_hint(value_type: &str) -> Option<&'static str> {
         | "dotpackingsparse-f16"
         | "packed-centroid"
         | "packed-variable-uniform" => Some(
-            "this research-only encoder was removed in vectorium 0.10; see VALUE_TYPES for the available ones",
+            "this research-only encoder was removed in vectorium 0.11; see VALUE_TYPES for the available ones",
         ),
         _ => None,
     }

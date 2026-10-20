@@ -103,7 +103,7 @@ value-type =     "f16"      # Value type for sparse vector values (options: "f16
   - Packed formats, each available only for the `component-type` listed (see [RustUsage.md](RustUsage.md#building-the-index) for what each one stores):
     - `"dotpacking8-scalaru8"`, `"dotpacking8-scalaru16"`: `"u16"` or `"u32"`
     - `"dotpacking8-fixedu8"`, `"dotpacking8-f16"`, `"dotpacking8-scalar4bit"`, `"blocked-sparse"`, `"blocked-sparse-scalaru8"`, `"blocked-sparse-scalaru16"`: `"u16"` only
-  - `"dotvbyte"` and the other formats removed with vectorium 0.10 are rejected by `run_experiments.py` with the name of their replacement.
+  - `"dotvbyte"` and the other formats removed with vectorium 0.11 are rejected by `run_experiments.py` with the name of their replacement.
 
   - **Recommendation**: Use `"f16"` for optimal balance of speed, memory efficiency, and accuracy. Use `"fixedu8"` for maximum memory savings when some loss in accuracy is acceptable.
 - `NUMA`: Optional NUMA (Non-Uniform Memory Access) configuration string for performance optimization

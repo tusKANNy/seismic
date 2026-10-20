@@ -2,13 +2,14 @@
 
 ## 0.6.0
 
-Seismic moves to vectorium 0.10 (branch `compression`, pinned at `dc83fbd`), which drops the
-research-only encoders and adds DotPacking8, blocked and step-scalar sparse encoders.
+Seismic moves to vectorium 0.11.0 (`main`, pinned at `ab18e9e`), the release of its `compression`
+branch, which drops the research-only encoders and adds DotPacking8, blocked and step-scalar sparse
+encoders.
 
 ### Breaking changes
 
 - **Removed value types.** The value type (`--value-type` of the binaries, `value-type` in the
-  experiment TOMLs) selects how an index stores its values. vectorium 0.10 deleted some encoders,
+  experiment TOMLs) selects how an index stores its values. vectorium 0.11 deleted some encoders,
   so these names are no longer accepted:
 
   | Removed value type | Use instead |
@@ -18,19 +19,19 @@ research-only encoders and adds DotPacking8, blocked and step-scalar sparse enco
   | `dotpacking8-sparse-scalar`, `dotpacking8-centroid4bit`, `dotpackingsparse-f16`, `packed-centroid`, `packed-variable-uniform` | none (research-only encoders) |
 
   There is no silent fallback: the binaries and `scripts/run_experiments.py` stop with an error
-  that names the replacement, e.g. `'dotvbyte': DotVByte was removed in vectorium 0.10; use
+  that names the replacement, e.g. `'dotvbyte': DotVByte was removed in vectorium 0.11; use
   'dotpacking8-scalaru8' (u16 or u32 components)`. `dotpacking8-scalaru8` stores 8-bit codes with
   one quantization step per component; against `dotvbyte` it is as fast or faster, uses 4–8% less
   memory and has slightly higher recall.
 - **Python:** `SeismicIndexDotVByte` is renamed `SeismicIndexDotPacking8` (DotPacking8, 8-bit codes
   with one step per component).
 - **Indexes built with 0.5.x must be rebuilt.**
-- **Rust API:** the generic bounds follow vectorium 0.10. Encoders must have `QueryParams = ()`
+- **Rust API:** the generic bounds follow vectorium 0.11. Encoders must have `QueryParams = ()`
   and conversions `Config = ()`.
 
 ### Value types
 
-Every value type of vectorium 0.10 can be used to build and query an index:
+Every value type of vectorium 0.11 can be used to build and query an index:
 
 | Value type | Component types |
 |---|---|

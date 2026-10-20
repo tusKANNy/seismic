@@ -138,7 +138,7 @@ VALUE_TYPES = [
     "dotpacking8-scalar",  # former name of dotpacking8-scalaru8
 ]
 
-# Value types removed together with their encoders in vectorium 0.10, and what to use instead.
+# Value types removed together with their encoders in vectorium 0.11, and what to use instead.
 REMOVED_VALUE_TYPES = {
     "dotvbyte": "dotpacking8-scalaru8",
     "dotvbyte-scalar": "dotpacking8-scalaru8",
@@ -157,7 +157,7 @@ def checked_value_type(configs):
     """Return the configured value-type, exiting with an error if it is not supported."""
     value_type = configs['indexing_parameters']["value-type"]
     if value_type in REMOVED_VALUE_TYPES:
-        print(colored(f"ERROR: value-type '{value_type}' was removed in vectorium 0.10. "
+        print(colored(f"ERROR: value-type '{value_type}' was removed in vectorium 0.11. "
                       f"Use '{REMOVED_VALUE_TYPES[value_type]}' instead.", "red"))
         sys.exit(1)
     if value_type not in VALUE_TYPES:
