@@ -37,7 +37,7 @@ fn main() {
                 let dim = dataset_f32.input_dim();
                 let nnz = dataset_f32.nnz();
                 let dataset =
-                    ScalarSparseDataset::<u16, f32, f16, DotProduct>::convert_from(dataset_f32);
+                    ScalarSparseDataset::<u16, f32, f16, DotProduct>::convert_from(dataset_f32, ());
                 (
                     "u16",
                     n,
@@ -56,6 +56,7 @@ fn main() {
                         let dataset =
                             ScalarSparseDataset::<u32, f32, f16, DotProduct>::convert_from(
                                 dataset_f32,
+                                (),
                             );
                         (
                             "u32",

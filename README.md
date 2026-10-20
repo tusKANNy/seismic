@@ -85,7 +85,7 @@ Each document in the `jsonl` file should be a JSON object with an `id` (integer)
 
 ### Features
 
-- **Multiple index variants** — Standard (`SeismicIndex`), compressed ([`SeismicIndexDotVByte`](examples/DotVByteIndex.ipynb)), and large vocabulary ([`SeismicIndexLV`](examples/LargeVocabulary.ipynb)) for collections with >65K unique tokens
+- **Multiple index variants** — Standard (`SeismicIndex`), compressed ([`SeismicIndexDotPacking8`](examples/DotPacking8Index.ipynb)), and large vocabulary ([`SeismicIndexLV`](examples/LargeVocabulary.ipynb)) for collections with >65K unique tokens
 - **RAG-ready** — Build the index with `load_content=True` and retrieve document texts alongside scores ([example](examples/RAG.ipynb))
 - **Python & Rust APIs** — Use from Python via `pyseismic-lsr` or integrate directly in Rust via `cargo add seismic` ([docs](docs/RustUsage.md))
 - **Parallel batch search** — Multi-threaded query processing via `batch_search`
@@ -98,7 +98,7 @@ Interactive Jupyter notebooks are available in the [`examples/`](examples/) fold
 - [**HandsOnSeismic.ipynb**](examples/HandsOnSeismic.ipynb) — Quick 2-minute overview of building and querying an index
 - [**SeismicGuide.ipynb**](examples/SeismicGuide.ipynb) — Comprehensive guide covering all features: indexing, k-NN graphs, search, evaluation
 - [**RAG.ipynb**](examples/RAG.ipynb) — Plug Seismic into a RAG pipeline with document content retrieval
-- [**DotVByteIndex.ipynb**](examples/DotVByteIndex.ipynb) — Memory-efficient compressed index variant
+- [**DotPacking8Index.ipynb**](examples/DotPacking8Index.ipynb) — Memory-efficient compressed index variant
 - [**LargeVocabulary.ipynb**](examples/LargeVocabulary.ipynb) — Handling collections with large vocabularies (>65K tokens)
 
 

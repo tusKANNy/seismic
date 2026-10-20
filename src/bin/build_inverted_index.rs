@@ -1,15 +1,12 @@
 use clap::Parser;
-use half::{bf16, f16};
 use num_traits::FromPrimitive;
-use seismic::FixedU8Q;
-use seismic::FixedU16Q;
+use seismic::InvertedIndexBase;
 use seismic::PlainInvertedIndex;
-use seismic::ScalarInvertedIndex;
-use seismic::ScalarSparseDataset;
 use seismic::configurations::{
     BlockingStrategy, ClusteringAlgorithm, Configuration, KnnConfiguration, PruningStrategy,
     SummarizationStrategy,
 };
+use seismic::with_dataset_type;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -17,41 +14,9 @@ use std::hash::Hash;
 use std::time::Instant;
 
 use vectorium::dataset::ConvertFrom;
-use vectorium::encoders::blocked_sparse::BlockedSparseEncoder;
-use vectorium::encoders::dotpacking8_centroid4bit::DotPacking8Centroid4BitEncoder;
-use vectorium::encoders::dotpacking8_fixedu8::DotPacking8FixedU8Encoder;
-use vectorium::encoders::dotpacking8_scalar4bit::DotPacking8Scalar4BitEncoder;
-use vectorium::encoders::dotpacking8_scalaru8::DotPacking8ScalarU8Encoder;
-use vectorium::encoders::dotpacking8_f16::DotPacking8f16Encoder;
-use vectorium::encoders::dotpacking8_u32_scalaru8::OptimisticDotPacking8U32ScalarU8Encoder;
-use vectorium::encoders::dotpackingsparse_f16::DotPackingSparsef16Encoder;
-use vectorium::encoders::dotpackingsparse_scalaru8::DotPackingSparseScalarU8Encoder;
-use vectorium::encoders::dotvbyte_fixedu8::DotVByteFixedU8Encoder;
-use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
-use vectorium::encoders::dotvbyte_u32_fixedu8::{
-    DotVByteU32FixedU8Encoder, OptimisticDotVByteFixedU8Encoder,
-};
-use vectorium::encoders::dotvbyte_u32_scalaru8::{
-    DotVByteU32ScalarU8Encoder, OptimisticDotVByteScalarU8Encoder,
-};
 use vectorium::{
-    ComponentType, Dataset, DotProduct, IndexSerializer, PackedCentroidSparseQuantizer,
-    PackedSparseDataset, PackedVariableBitUniformSparseQuantizer, SpaceUsage, read_seismic_format,
+    ComponentType, Dataset, DotProduct, IndexSerializer, SpaceUsage, read_seismic_format,
 };
-
-// ── Packed 4-bit quantizer hyperparameters ──────────────────────────────────
-// vectorium trains the packed quantizers inside `convert_dataset_into` and reads
-// their training hyperparameters *only* from process env vars (see vectorium's
-// `quant_env`). Env vars are therefore the single channel we have to feed them, so
-// we set them from the named constants below right before the conversion runs.
-const QUANT_LOWER_PCT: f32 = 0.0; // no lower-percentile clipping
-const QUANT_UPPER_PCT: f32 = 1.0; // no upper-percentile clipping
-const QUANT_KMEANS_ITERS: usize = 5; // packed-centroid: per-component Lloyd iterations
-// FIXME: forced 4-bit. The variable-bit uniform encoder supports nbits ∈ [1, 7], but
-// we lock it to the specialized 4-bit operating point for now (SIMD-friendly
-// interleaved nibble layout + dedicated dot-product kernel, byte-compatible with
-// packed-centroid). Drop this constant / add a flag if other widths are needed later.
-const QUANT_NBITS: u8 = 4;
 
 // clap does not support enums with associated values; keep CLI-only types in the bin.
 #[derive(clap::ValueEnum, Default, Debug, Clone)]
@@ -171,7 +136,7 @@ pub struct Args {
     #[arg(default_value = "u16")]
     component_type: String,
 
-    /// Value type: f16, bf16, f32, fixedu16, fixedu8, dotvbyte, dotvbyte-scalar, dotvbyte-optimistic, dotvbyte-optimistic-scalar, dotpacking8-fixedu8, dotpacking8-scalar, dotpacking8-sparse-scalar, dotpacking8-scalar4bit, dotpacking8-centroid4bit, dotpacking8-optimistic-scalar, dotpacking8-f16, dotpackingsparse-f16, packed-centroid, or packed-variable-uniform; see docs/RustUsage.md#using-the-rust-code for quantization choices.
+    /// Value type: f32, f16, bf16, fixedu8, fixedu16, scalaru8, scalaru16, blocked-sparse, blocked-sparse-scalaru8, blocked-sparse-scalaru16, dotpacking8-fixedu8, dotpacking8-scalaru8, dotpacking8-scalaru16, dotpacking8-f16, or dotpacking8-scalar4bit (see `seismic::value_types` for the component types each supports); see docs/RustUsage.md#using-the-rust-code for quantization choices.
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f16")]
     value_type: String,
@@ -240,6 +205,18 @@ where
         + Serialize
         + DeserializeOwned,
 {
+    let dataset = read_dataset::<C>(args);
+    let config = build_config(args);
+    println!("\nBuilding the index...");
+    println!("{:?}", config);
+
+    PlainInvertedIndex::<C, f32>::build(dataset, config)
+}
+
+fn read_dataset<C>(args: &Args) -> vectorium::PlainSparseDataset<C, f32, DotProduct>
+where
+    C: ComponentType + FromPrimitive,
+{
     let dataset =
         read_seismic_format::<C, f32, DotProduct>(args.input_file.as_ref().unwrap()).unwrap();
 
@@ -249,12 +226,7 @@ where
         "Avg number of components: {:.2}",
         dataset.nnz() as f32 / dataset.len() as f32
     );
-
-    let config = build_config(args);
-    println!("\nBuilding the index...");
-    println!("{:?}", config);
-
-    PlainInvertedIndex::<C, f32>::build(dataset, config)
+    dataset
 }
 
 fn write_index<T>(index: T, output_file: &str, elapsed: Instant)
@@ -275,409 +247,43 @@ where
     println!("Total time {} secs", build_time + save_time);
 }
 
-fn build_for_component<C>(args: &Args)
-where
-    C: ComponentType
-        + vectorium::ComponentType
-        + SpaceUsage
-        + Hash
-        + FromPrimitive
-        + Serialize
-        + DeserializeOwned,
-{
-    let time = Instant::now();
-    let dataset_f32 =
-        read_seismic_format::<C, f32, DotProduct>(args.input_file.as_ref().unwrap()).unwrap();
-
-    println!("Number of Vectors: {}", dataset_f32.len());
-    println!("Number of Dimensions: {}", dataset_f32.input_dim());
-    println!(
-        "Avg number of components: {:.2}",
-        dataset_f32.nnz() as f32 / dataset_f32.len() as f32
-    );
-
-    let config = build_config(args);
-    println!("\nBuilding the index...");
-    println!("{:?}", config);
-
-    match args.value_type.as_str() {
-        "f32" => write_index(
-            PlainInvertedIndex::<C, f32>::build(dataset_f32, config),
-            args.output_file.as_ref().unwrap(),
-            time,
-        ),
-        "f16" => {
-            let dataset = ScalarSparseDataset::<C, f32, f16, DotProduct>::convert_from(dataset_f32);
-            write_index(
-                ScalarInvertedIndex::<C, f32, f16>::build(dataset, config),
-                args.output_file.as_ref().unwrap(),
-                time,
-            );
-        }
-        "bf16" => {
-            let dataset =
-                ScalarSparseDataset::<C, f32, bf16, DotProduct>::convert_from(dataset_f32);
-            write_index(
-                ScalarInvertedIndex::<C, f32, bf16>::build(dataset, config),
-                args.output_file.as_ref().unwrap(),
-                time,
-            );
-        }
-        "fixedu16" => {
-            let dataset =
-                ScalarSparseDataset::<C, f32, FixedU16Q, DotProduct>::convert_from(dataset_f32);
-            write_index(
-                ScalarInvertedIndex::<C, f32, FixedU16Q>::build(dataset, config),
-                args.output_file.as_ref().unwrap(),
-                time,
-            );
-        }
-        "fixedu8" => {
-            write_index(
-                ScalarInvertedIndex::<C, f32, FixedU8Q>::convert_dataset_from(
-                    PlainInvertedIndex::<C, f32>::build(dataset_f32, config),
-                ),
-                args.output_file.as_ref().unwrap(),
-                time,
-            )
-        }
-        _ => {
-            eprintln!("Error: value-type must be 'f16', 'bf16', 'f32', 'fixedu16', or 'fixedu8'");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn build_blocked_sparse(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: blocked-sparse requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<BlockedSparseEncoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotvbyte(args: &Args) {
-    let time = Instant::now();
-    match args.component_type.as_str() {
-        "u16" => {
-            let base_index = build_base_index::<u16>(args);
-            let packed_index =
-                base_index.convert_dataset_into::<PackedSparseDataset<DotVByteFixedU8Encoder>>();
-            write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-        }
-        "u32" => {
-            let base_index = build_base_index::<u32>(args);
-            let packed_index =
-                base_index.convert_dataset_into::<PackedSparseDataset<DotVByteU32FixedU8Encoder>>();
-            write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-        }
-        _ => {
-            eprintln!("Error: dotvbyte requires component-type 'u16' or 'u32'.");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn build_dotvbyte_scalar(args: &Args) {
-    let time = Instant::now();
-    match args.component_type.as_str() {
-        "u16" => {
-            let base_index = build_base_index::<u16>(args);
-            let packed_index =
-                base_index.convert_dataset_into::<PackedSparseDataset<DotVByteScalarU8Encoder>>();
-            write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-        }
-        "u32" => {
-            let base_index = build_base_index::<u32>(args);
-            let packed_index = base_index
-                .convert_dataset_into::<PackedSparseDataset<DotVByteU32ScalarU8Encoder>>();
-            write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-        }
-        _ => {
-            eprintln!("Error: dotvbyte-scalar requires component-type 'u16' or 'u32'.");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn build_dotvbyte_optimistic(args: &Args) {
-    if args.component_type != "u32" {
-        eprintln!("Error: dotvbyte-optimistic requires component-type 'u32'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u32>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<OptimisticDotVByteFixedU8Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotvbyte_optimistic_scalar(args: &Args) {
-    if args.component_type != "u32" {
-        eprintln!("Error: dotvbyte-optimistic-scalar requires component-type 'u32'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u32>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<OptimisticDotVByteScalarU8Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpacking8(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotpacking8 requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8FixedU8Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpacking8_fixedu8(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotpacking8-fixedu8 requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8FixedU8Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpacking8_scalar(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotpacking8-scalar requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8ScalarU8Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpacking8_sparse_scalar(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotpacking8-sparse-scalar requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotPackingSparseScalarU8Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpacking8_scalar4bit(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotpacking8-scalar4bit requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8Scalar4BitEncoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpacking8_centroid4bit(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotpacking8-centroid4bit requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8Centroid4BitEncoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpacking8_optimistic_scalar(args: &Args) {
-    if args.component_type != "u32" {
-        eprintln!("Error: dotpacking8-optimistic-scalar requires component-type 'u32'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u32>(args);
-    let packed_index = base_index
-        .convert_dataset_into::<PackedSparseDataset<OptimisticDotPacking8U32ScalarU8Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpacking8_f16(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotpacking8-f16 requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotPacking8f16Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_dotpackingsparse_f16(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: dotpackingsparse-f16 requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<DotPackingSparsef16Encoder>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-/// Set the percentile-clipping env vars that vectorium's packed-quantizer
-/// `ConvertFrom` reads at conversion time (shared by both packed value-types).
-fn set_packed_quant_env_common() {
-    // SAFETY: called at the top of a packed build function, before `build_base_index`
-    // spawns the rayon-parallel build / conversion that reads these vars. No other
-    // thread reads the environment at this point.
-    unsafe {
-        std::env::set_var("QUANT_LOWER_PCT", QUANT_LOWER_PCT.to_string());
-        std::env::set_var("QUANT_UPPER_PCT", QUANT_UPPER_PCT.to_string());
-    }
-}
-
-fn build_packed_centroid(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: packed-centroid requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-    set_packed_quant_env_common();
-    // SAFETY: see set_packed_quant_env_common.
-    unsafe {
-        std::env::set_var("QUANT_KMEANS_ITERS", QUANT_KMEANS_ITERS.to_string());
-    }
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index =
-        base_index.convert_dataset_into::<PackedSparseDataset<PackedCentroidSparseQuantizer>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
-fn build_packed_variable_uniform(args: &Args) {
-    if args.component_type != "u16" {
-        eprintln!("Error: packed-variable-uniform requires component-type 'u16'.");
-        std::process::exit(1);
-    }
-    set_packed_quant_env_common();
-    // SAFETY: see set_packed_quant_env_common. QUANT_NBITS is forced to 4 (see the
-    // const's FIXME) — we do not expose other bit widths from the CLI for now.
-    unsafe {
-        std::env::set_var("QUANT_NBITS", QUANT_NBITS.to_string());
-    }
-    let time = Instant::now();
-    let base_index = build_base_index::<u16>(args);
-    let packed_index = base_index
-        .convert_dataset_into::<PackedSparseDataset<PackedVariableBitUniformSparseQuantizer>>();
-    write_index(packed_index, args.output_file.as_ref().unwrap(), time);
-}
-
 fn main() {
     let args = Args::parse();
+    let time = Instant::now();
+    let output_file = args.output_file.clone().unwrap();
 
-    if args.value_type == "blocked-sparse" {
-        build_blocked_sparse(&args);
-        return;
+    // `$C` is the component type, `$T` the dataset of the index; see `seismic::value_types`
+    // for the meaning of the three routes.
+    macro_rules! build {
+        ($C:ty, $T:ty, plain) => {
+            write_index(build_base_index::<$C>(&args), &output_file, time)
+        };
+        ($C:ty, $T:ty, quantize_first) => {{
+            let dataset = <$T>::convert_from(read_dataset::<$C>(&args), ());
+            let config = build_config(&args);
+            println!("\nBuilding the index...");
+            println!("{:?}", config);
+            write_index(
+                InvertedIndexBase::<$T>::build(dataset, config),
+                &output_file,
+                time,
+            )
+        }};
+        ($C:ty, $T:ty, convert_after) => {
+            write_index(
+                build_base_index::<$C>(&args).convert_dataset_into::<$T>(),
+                &output_file,
+                time,
+            )
+        };
     }
 
-    if args.value_type == "dotvbyte" {
-        build_dotvbyte(&args);
-        return;
-    }
-
-    if args.value_type == "dotvbyte-scalar" {
-        build_dotvbyte_scalar(&args);
-        return;
-    }
-
-    if args.value_type == "dotpacking8-fixedu8" {
-        build_dotpacking8_fixedu8(&args);
-        return;
-    }
-
-    if args.value_type == "dotpacking8-scalar" {
-        build_dotpacking8_scalar(&args);
-        return;
-    }
-
-    if args.value_type == "dotpacking8-sparse-scalar" {
-        build_dotpacking8_sparse_scalar(&args);
-        return;
-    }
-
-    if args.value_type == "dotpacking8-scalar4bit" {
-        build_dotpacking8_scalar4bit(&args);
-        return;
-    }
-
-    if args.value_type == "dotpacking8-centroid4bit" {
-        build_dotpacking8_centroid4bit(&args);
-        return;
-    }
-
-    if args.value_type == "dotvbyte-optimistic" {
-        build_dotvbyte_optimistic(&args);
-        return;
-    }
-
-    if args.value_type == "dotvbyte-optimistic-scalar" {
-        build_dotvbyte_optimistic_scalar(&args);
-        return;
-    }
-
-    if args.value_type == "dotpacking8-optimistic-scalar" {
-        build_dotpacking8_optimistic_scalar(&args);
-        return;
-    }
-
-    if args.value_type == "dotpacking8-f16" {
-        build_dotpacking8_f16(&args);
-        return;
-    }
-
-    if args.value_type == "dotpackingsparse-f16" {
-        build_dotpackingsparse_f16(&args);
-        return;
-    }
-
-    if args.value_type == "packed-centroid" {
-        build_packed_centroid(&args);
-        return;
-    }
-
-    if args.value_type == "packed-variable-uniform" {
-        build_packed_variable_uniform(&args);
-        return;
-    }
-
-    match args.component_type.as_str() {
-        "u16" => build_for_component::<u16>(&args),
-        "u32" => build_for_component::<u32>(&args),
-        _ => {
-            eprintln!("Error: component-type must be either 'u16' or 'u32'");
-            std::process::exit(1);
-        }
+    if let Err(msg) = with_dataset_type!(
+        args.component_type.as_str(),
+        args.value_type.as_str(),
+        build
+    ) {
+        eprintln!("Error: {msg}");
+        std::process::exit(1);
     }
 }
