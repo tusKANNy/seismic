@@ -14,7 +14,7 @@ use vectorium::dataset::ConvertFrom;
 use vectorium::dataset::ScoredVector;
 use vectorium::vector_encoder::{SparseDataEncoder, SparseVectorEncoder};
 use vectorium::{
-    Dataset, DatasetGrowable, Distance, DotProduct, FlatIndex, Index, QueryEvaluator,
+    Dataset, DatasetGrowable, Distance, DotProduct, FlatIndex, Index, IndexStats, QueryEvaluator,
     ScalarSparseQuantizer, SpaceUsage, SparseData, SparseDataset, SparseDatasetGrowable,
     SparseVectorView, VectorEncoder,
 };
@@ -31,7 +31,7 @@ use tar::Archive;
 
 use crate::{
     InvertedIndexBase,
-    configurations::Configuration,
+    configurations::{Configuration, SearchParams},
     index_traits::{ComponentFor, EncoderFor, SeismicBuildDataset, SeismicSearchDataset, ValueFor},
     inverted_index::Knn,
 };
@@ -877,6 +877,44 @@ where
     }
 }
 
+/// Same as the [`Index`] impl of [`InvertedIndexBase`]: the query is already in component-id
+/// space (no token-string lookup) and results carry internal vector ids, not document ids.
+/// Use [`SeismicIndex::remap_doc_ids`] to map them back.
+impl<S> Index for SeismicIndex<S>
+where
+    S: SeismicSearchDataset,
+    EncoderFor<S>: VectorEncoder<Distance = DotProduct, QueryParams = ()>,
+    for<'a> <EncoderFor<S> as VectorEncoder>::QueryVector<'a>:
+        From<SparseVectorView<'a, ComponentFor<S>, f32>>,
+{
+    type Query<'q> = SparseVectorView<'q, ComponentFor<S>, f32>;
+    type Distance = DotProduct;
+    type SearchParams = SearchParams;
+
+    fn search<'q>(
+        &self,
+        query: Self::Query<'q>,
+        k: usize,
+        search_params: &Self::SearchParams,
+    ) -> Vec<ScoredVectorDotProduct> {
+        Index::search(&self.inverted_index, query, k, search_params)
+    }
+}
+
+impl<S> IndexStats for SeismicIndex<S>
+where
+    S: SparseData,
+    EncoderFor<S>: SparseDataEncoder,
+{
+    fn n_elements(&self) -> usize {
+        self.len()
+    }
+
+    fn dim(&self) -> usize {
+        SeismicIndex::dim(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -982,5 +1020,18 @@ mod tests {
         );
         assert_eq!(dataset.len(), 0);
         assert!(dataset.token_to_id_map().is_empty());
+    }
+
+    /// Compiles only if `SeismicIndex` satisfies vectorium's `Index` and `IndexStats` with the
+    /// expected associated types. Its search forwards to `InvertedIndexBase`, whose behavior is
+    /// tested in `inverted_index.rs`.
+    #[test]
+    fn seismic_index_satisfies_index_and_index_stats() {
+        fn assert_bounds<I>()
+        where
+            I: Index<Distance = DotProduct, SearchParams = SearchParams> + IndexStats,
+        {
+        }
+        assert_bounds::<SeismicIndex<vectorium::PlainSparseDataset<u16, f32, DotProduct>>>();
     }
 }

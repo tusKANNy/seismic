@@ -10,8 +10,8 @@ use vectorium::IndexSerializer;
 use vectorium::dataset::{ConvertFrom, ConvertInto};
 use vectorium::vector_encoder::{SparseDataEncoder, SparseVectorEncoder};
 use vectorium::{
-    Dataset, Distance, DotProduct, QueryEvaluator, ScoredRange, ScoredVectorDotProduct, SpaceUsage,
-    SparseData, SparseVectorView, VectorEncoder,
+    Dataset, Distance, DotProduct, Index, IndexStats, QueryEvaluator, ScoredRange,
+    ScoredVectorDotProduct, SpaceUsage, SparseData, SparseVectorView, VectorEncoder,
 };
 
 use indicatif::ParallelProgressIterator;
@@ -33,7 +33,7 @@ use std::io::Result as IoResult;
 
 pub use crate::configurations::{
     BlockingStrategy, ClusteringAlgorithm, Configuration, KnnConfiguration, PruningStrategy,
-    SummarizationStrategy,
+    SearchParams, SummarizationStrategy,
 };
 
 #[derive(Default, PartialEq, Clone, Serialize, Deserialize)]
@@ -170,7 +170,7 @@ where
     ) -> Vec<ScoredVectorDotProduct>
     where
         S: SeismicSearchDataset,
-        EncoderFor<S>: VectorEncoder<Distance = DotProduct>,
+        EncoderFor<S>: VectorEncoder<Distance = DotProduct, QueryParams = ()>,
         <EncoderFor<S> as VectorEncoder>::QueryVector<'q>:
             From<SparseVectorView<'q, ComponentFor<S>, f32>>,
     {
@@ -184,7 +184,10 @@ where
         );
 
         let query_for_eval: <EncoderFor<S> as VectorEncoder>::QueryVector<'q> = query.into();
-        let mut evaluator = self.forward_index.encoder().query_evaluator(query_for_eval, &());
+        let mut evaluator = self
+            .forward_index
+            .encoder()
+            .query_evaluator(query_for_eval, &());
 
         let mut heap = KHeap::new(k);
         // A query inspects ~2k postings at the operating points of interest (MSMARCOV1), so this covers
@@ -983,6 +986,74 @@ where
     }
 }
 
+/// Seismic as a generic vectorium [`Index`]: a sparse query in the index's own component space,
+/// scored by dot product. Unlike the inherent search, query components need not be sorted, and
+/// components beyond the index's dimensionality are ignored instead of panicking.
+/// Results carry the forward index's vector ids, so a `RerankIndex` can
+/// pair this first stage with any rerank dataset stored in the same order.
+impl<S> Index for InvertedIndexBase<S>
+where
+    S: SeismicSearchDataset,
+    EncoderFor<S>: VectorEncoder<Distance = DotProduct, QueryParams = ()>,
+    for<'a> <EncoderFor<S> as VectorEncoder>::QueryVector<'a>:
+        From<SparseVectorView<'a, ComponentFor<S>, f32>>,
+{
+    type Query<'q> = SparseVectorView<'q, ComponentFor<S>, f32>;
+    type Distance = DotProduct;
+    type SearchParams = SearchParams;
+
+    fn search<'q>(
+        &self,
+        query: Self::Query<'q>,
+        k: usize,
+        search_params: &Self::SearchParams,
+    ) -> Vec<ScoredVectorDotProduct> {
+        // The inherent search requires sorted components within the index's dimensionality;
+        // generic callers can't be expected to know that, so normalize here. Components outside
+        // the index contribute nothing to a dot product and are dropped. Well-formed queries (the
+        // common case) are passed through as is.
+        let n_lists = self.posting_lists.len();
+        let in_range = |c: &ComponentFor<S>| -> bool { c.as_() < n_lists };
+        let (kept_c, kept_v): (Vec<ComponentFor<S>>, Vec<f32>);
+        let query = if query.components().is_sorted() && query.components().iter().all(in_range) {
+            query
+        } else {
+            (kept_c, kept_v) = query
+                .components()
+                .iter()
+                .copied()
+                .zip(query.values().iter().copied())
+                .filter(|(c, _)| in_range(c))
+                .sorted_unstable_by_key(|&(c, _)| c)
+                .unzip();
+            SparseVectorView::new(&kept_c, &kept_v)
+        };
+        InvertedIndexBase::search(
+            self,
+            query,
+            k,
+            search_params.query_cut,
+            search_params.heap_factor,
+            search_params.n_knn,
+            search_params.first_sorted,
+        )
+    }
+}
+
+impl<S> IndexStats for InvertedIndexBase<S>
+where
+    S: SparseData,
+    EncoderFor<S>: SparseDataEncoder,
+{
+    fn n_elements(&self) -> usize {
+        self.len()
+    }
+
+    fn dim(&self) -> usize {
+        InvertedIndexBase::dim(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1412,4 +1483,92 @@ mod tests {
             assert_eq!(scores, expected, "component {component}");
         }
     }
+
+    // Tests for the vectorium `Index` / `IndexStats` impls, on a synthetic collection.
+
+    const TRAIT_DIM: usize = 300;
+    const TRAIT_N_DOCS: usize = 3000;
+
+    /// Sorted, deduplicated random sparse vector with 5..=24 nonzeros.
+    fn random_sparse_vector(state: &mut u64) -> (Vec<u16>, Vec<f32>) {
+        let nnz = 5 + (lcg(state) % 20) as usize;
+        let mut components: Vec<u16> = (0..nnz)
+            .map(|_| (lcg(state) % TRAIT_DIM as u64) as u16)
+            .collect();
+        components.sort_unstable();
+        components.dedup();
+        let values = components
+            .iter()
+            .map(|_| (lcg(state) % 1000) as f32 / 1000.0 + 0.01)
+            .collect();
+        (components, values)
+    }
+
+    fn random_sparse_dataset(seed: u64) -> PlainSparseDataset<u16, f32, DotProduct> {
+        let mut state = seed;
+        let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(TRAIT_DIM, TRAIT_DIM);
+        let mut dataset = PlainSparseDatasetGrowable::new(quantizer);
+        for _ in 0..TRAIT_N_DOCS {
+            let (c, v) = random_sparse_vector(&mut state);
+            dataset.push(SparseVectorView::new(c.as_slice(), v.as_slice()));
+        }
+        dataset.into()
+    }
+
+    /// Written against the trait only, as vectorium-generic code would be.
+    fn search_generic<I: Index>(
+        index: &I,
+        query: I::Query<'_>,
+        k: usize,
+        params: &I::SearchParams,
+    ) -> Vec<u64> {
+        index
+            .search(query, k, params)
+            .iter()
+            .map(|r| r.vector)
+            .collect()
+    }
+
+    #[test]
+    fn test_index_trait_matches_inherent_search() {
+        let index = InvertedIndexBase::build(random_sparse_dataset(7), Configuration::default());
+        assert_eq!(IndexStats::n_elements(&index), TRAIT_N_DOCS);
+        assert_eq!(IndexStats::dim(&index), TRAIT_DIM);
+
+        let params = SearchParams::new(10, 0.7);
+        let mut state = 42;
+        for _ in 0..20 {
+            let (c, v) = random_sparse_vector(&mut state);
+            let query = SparseVectorView::new(c.as_slice(), v.as_slice());
+            let via_trait = search_generic(&index, query, 10, &params);
+            let inherent: Vec<u64> = index
+                .search(query, 10, params.query_cut, params.heap_factor, 0, false)
+                .iter()
+                .map(|r| r.vector)
+                .collect();
+            assert_eq!(via_trait, inherent);
+        }
+    }
+
+    #[test]
+    fn test_index_trait_normalizes_queries() {
+        let index = InvertedIndexBase::build(random_sparse_dataset(7), Configuration::default());
+        let params = SearchParams::default();
+        let mut state = 42;
+        for _ in 0..20 {
+            let (c, v) = random_sparse_vector(&mut state);
+            let sorted = search_generic(&index, SparseVectorView::new(&c, &v), 10, &params);
+
+            let (rc, rv): (Vec<u16>, Vec<f32>) = c.iter().rev().zip(v.iter().rev()).unzip();
+            let reversed = search_generic(&index, SparseVectorView::new(&rc, &rv), 10, &params);
+            assert_eq!(sorted, reversed);
+
+            let (mut oc, mut ov) = (c.clone(), v.clone());
+            oc.push(TRAIT_DIM as u16 + 5);
+            ov.push(1.0);
+            let out_of_range = search_generic(&index, SparseVectorView::new(&oc, &ov), 10, &params);
+            assert_eq!(sorted, out_of_range);
+        }
+    }
+
 }

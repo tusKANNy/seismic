@@ -48,6 +48,17 @@ in one place, `src/value_types.rs` (`VALUE_TYPES` and the `with_dataset_type!` m
 `full_scan_inverted_index` now takes any value type and a `--component-type` (default value type:
 `dotpacking8-scalaru8`).
 
+### Rust API: Seismic as a vectorium `Index`
+
+- `InvertedIndexBase` and `SeismicIndex` implement vectorium's `Index` and `IndexStats` traits
+  (`Query = SparseVectorView<C, f32>`, `Distance = DotProduct`), so a Seismic index can be used
+  wherever a generic vectorium index is expected, e.g. as the first stage of kANNolo's
+  `RerankIndex`. The query-time knobs are bundled in the new `seismic::SearchParams`
+  (`query_cut`, `heap_factor`, `n_knn`, `first_sorted`; defaults match `perf_inverted_index`).
+  Unlike the inherent `search`, the trait method sorts unsorted query components and drops those
+  beyond the index dimensionality instead of panicking. Results carry internal vector ids;
+  `SeismicIndex::remap_doc_ids` maps them to document ids. Contributed by Rohan Jha (#20).
+
 ### Experiments
 
 - The experiment configs that used `dotvbyte` now use `dotpacking8-scalaru8`.

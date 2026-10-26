@@ -9,6 +9,7 @@ pub mod configurations;
 pub(crate) mod posting_list;
 
 pub mod inverted_index;
+pub use configurations::SearchParams;
 pub use inverted_index::InvertedIndexBase;
 
 pub mod index_traits;

@@ -128,3 +128,51 @@ impl KnnConfiguration {
         KnnConfiguration { nknn, knn_path }
     }
 }
+
+/// Query-time knobs of a Seismic search, bundled as the
+/// [`Index::SearchParams`](vectorium::Index::SearchParams) of [`InvertedIndexBase`](crate::InvertedIndexBase)
+/// and [`SeismicIndex`](crate::SeismicIndex).
+///
+/// Defaults match the `perf_inverted_index` binary.
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SearchParams {
+    /// Only the top `query_cut` query components (by value) visit their posting lists.
+    pub query_cut: usize,
+    /// Skip a block when its estimated dot product is below `heap_factor` times the current k-th score.
+    pub heap_factor: f32,
+    /// Number of neighbors of top results to rescore with the knn graph, if the index has one.
+    pub n_knn: usize,
+    /// Sort the first posting list's blocks by estimated dot product before scanning them.
+    pub first_sorted: bool,
+}
+
+impl Default for SearchParams {
+    fn default() -> Self {
+        Self {
+            query_cut: 10,
+            heap_factor: 0.7,
+            n_knn: 0,
+            first_sorted: false,
+        }
+    }
+}
+
+impl SearchParams {
+    pub fn new(query_cut: usize, heap_factor: f32) -> Self {
+        Self {
+            query_cut,
+            heap_factor,
+            ..Self::default()
+        }
+    }
+
+    pub fn n_knn(mut self, n_knn: usize) -> Self {
+        self.n_knn = n_knn;
+        self
+    }
+
+    pub fn first_sorted(mut self, first_sorted: bool) -> Self {
+        self.first_sorted = first_sorted;
+        self
+    }
+}
