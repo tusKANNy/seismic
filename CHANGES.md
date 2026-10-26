@@ -1,5 +1,12 @@
 # Changes
 
+## Unreleased
+
+- vectorium 0.11.0 (`ab18e9e`) → 0.11.1 (tag `v0.11.1`, `406640c`). vectorium now takes the
+  forward-index prefetch cap from the caller; Seismic passes 512 bytes, the value 0.11.0 hard-coded,
+  so search behaviour is unchanged. Same vectorium as kANNolo 0.14+, so a Seismic index can be the
+  first stage of kANNolo's `RerankIndex`. Indexes built with 0.6.0 load unchanged.
+
 ## 0.6.0
 
 Seismic moves to vectorium 0.11.0 (`main`, pinned at `ab18e9e`), the release of its `compression`

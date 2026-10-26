@@ -367,7 +367,7 @@ impl<C: ComponentType> PostingList<C> {
             if visited.contains(&range.start) {
                 continue;
             }
-            forward_index.prefetch_with_range(range);
+            forward_index.prefetch_with_range(range, PREFETCH_MAX_BYTES);
         }
 
         // Unvisited documents are scored six at a time: the batched kernel walks the six
@@ -435,14 +435,14 @@ impl<C: ComponentType> PostingList<C> {
         let (groups, rest) = self.medoid_postings.as_chunks::<6>();
         for group in groups {
             for medoid in group {
-                forward_index.prefetch_with_range(medoid.unpack());
+                forward_index.prefetch_with_range(medoid.unpack(), PREFETCH_MAX_BYTES);
             }
             distances.extend(evaluator.compute_distances_batch6(std::array::from_fn(|i| {
                 forward_index.get_with_range(group[i].unpack())
             })));
         }
         for medoid in rest {
-            forward_index.prefetch_with_range(medoid.unpack());
+            forward_index.prefetch_with_range(medoid.unpack(), PREFETCH_MAX_BYTES);
         }
         for medoid in rest {
             distances
@@ -679,6 +679,10 @@ impl<C: ComponentType> PostingList<C> {
 /// (two `u32`s per component, allocated once per posting list) is replaced by
 /// a hash map — the same cutoff vectorium uses to densify sparse queries.
 const DENSE_SCRATCH_MAX_DIM: usize = 1 << 20;
+
+/// Bytes of a forward-index vector prefetched before it is scored. vectorium 0.11.1 leaves the cap
+/// to the caller; 512 is what posting-block scans want (vectorium 0.11.0 hard-coded it).
+const PREFETCH_MAX_BYTES: usize = 512;
 
 /// Component → index-into-`pairs` lookup of [`SummaryScratch`].
 enum ComponentSlots<C> {
