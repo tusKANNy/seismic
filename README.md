@@ -19,12 +19,12 @@
 Seismic is a fast and lightweight search engine for learned sparse embeddings, written in Rust with Python bindings. It indexes sparse vector collections and retrieves results in microseconds with near-exact accuracy.
 
 
-### Requirements
+## Requirements
 
 - **Python** >= 3.8
 - **Rust** toolchain (only needed if installing from source for hardware-specific optimizations)
 
-### Installation
+## Installation
 
 The easiest way to use Seismic is via its Python API, which can be installed in two different ways:
 
@@ -41,7 +41,7 @@ RUSTFLAGS="-C target-cpu=native" pip install --no-binary :all: pyseismic-lsr
 Check [docs/PythonUsage.md](docs/PythonUsage.md) for more details.
 
 
-### Quick Start
+## Quick Start
 Given a collection as a `jsonl` file, you can quickly index it by running
 ```python
 from seismic import SeismicIndex
@@ -82,7 +82,7 @@ results = index.search(
 Each document in the `jsonl` file should be a JSON object with an `id` (integer), an optional `content` (string), and a `vector` (dictionary mapping tokens to scores, e.g., `{"dog": 2.45}`). See [docs/RunExperiments.md](docs/RunExperiments.md#data-format) for full format details.
 
 
-### Features
+## Features
 
 - **Multiple index variants** — Standard (`SeismicIndex`), compressed ([`SeismicIndexDotPacking8`](examples/DotPacking8Index.ipynb)), and large vocabulary ([`SeismicIndexLV`](examples/LargeVocabulary.ipynb)) for collections with >65K unique tokens
 - **RAG-ready** — Build the index with `load_content=True` and retrieve document texts alongside scores ([example](examples/RAG.ipynb))
@@ -90,7 +90,7 @@ Each document in the `jsonl` file should be a JSON object with an `id` (integer)
 - **Parallel batch search** — Multi-threaded query processing via `batch_search`
 
 
-### Examples
+## Examples
 
 Interactive Jupyter notebooks are available in the [`examples/`](examples/) folder:
 
@@ -102,7 +102,7 @@ Interactive Jupyter notebooks are available in the [`examples/`](examples/) fold
 
 
 
-### Comparison with the state-of-the-art
+## Comparison with the state-of-the-art
 Comparison with Dynamic Superblock Pruning ([DSP](https://arxiv.org/pdf/2504.17045)) using the `splade-v3` encoding of the MS MARCO dataset. 
 
 
@@ -115,12 +115,12 @@ Experiments performed in single-threaded mode on an Intel Core Ultra 7265K CPU, 
 
 
 
-### Best Results
+## Best Results
 
 Seismic is an approximate algorithm designed for high-performance retrieval over learned sparse representations. We provide **pre-optimized configurations** for several common datasets, e.g., MsMarco. Check the detailed documentation in [docs/BestResults.md](docs/BestResults.md) and the available optimized configurations in [experiments/best_configs](experiments/best_configs).
 
 
-### Resources
+## Resources
 Check out our `docs` folder for detailed guides:
 
 - **[PythonUsage.md](docs/PythonUsage.md)** - How to use the Seismic Python API.
@@ -131,7 +131,7 @@ Check out our `docs` folder for detailed guides:
 - **[TomlInstructions.md](docs/TomlInstructions.md)** - TOML configuration reference.
 
 
-### Bibliography
+## Bibliography
 
 1. Sebastian Bruch, Franco Maria Nardini, Cosimo Rulli, and Rossano Venturini. "*Efficient Inverted Indexes for Approximate Retrieval over Learned Sparse Representations*." Proc. ACM SIGIR. 2024.
 2. Sebastian Bruch, Franco Maria Nardini, Cosimo Rulli, and Rossano Venturini. "*Pairing Clustered Inverted Indexes with κ-NN Graphs for Fast Approximate Retrieval over Learned Sparse Representations*."  Proc. ACM CIKM. 2024.
@@ -201,6 +201,8 @@ IEEE TPAMI (To Appear)
 }
 ```
 
-### Citation License
-The source code in this repository is subject to the following citation license: **By downloading and using this software, you agree to cite the papers listed in the Bibliography section above in any kind of material you produce where it was used to conduct a search or experimentation, whether it be a research paper, dissertation, article, poster, presentation, or documentation. By using this software, you have agreed to the citation license.**
+## Citation License
+The source code in this repository is subject to the following citation license: **By downloading and using this software, you agree to cite the papers listed in the Bibliography section above in any kind of material you produce where it was used to conduct a search or experimentation, whether it be a research paper, dissertation, article, poster, presentation, or documentation. By using this software, you have agreed to the citation license**.
 
+## License
+This software is released under the **MIT License** (see [LICENSE](LICENSE)).
