@@ -133,9 +133,6 @@ Check out our `docs` folder for detailed guides:
 
 ### Bibliography
 
-<details>
-<summary>Click to expand citations</summary>
-
 1. Sebastian Bruch, Franco Maria Nardini, Cosimo Rulli, and Rossano Venturini. "*Efficient Inverted Indexes for Approximate Retrieval over Learned Sparse Representations*." Proc. ACM SIGIR. 2024.
 2. Sebastian Bruch, Franco Maria Nardini, Cosimo Rulli, and Rossano Venturini. "*Pairing Clustered Inverted Indexes with κ-NN Graphs for Fast Approximate Retrieval over Learned Sparse Representations*."  Proc. ACM CIKM. 2024.
 3. Sebastian Bruch, Franco Maria Nardini, Cosimo Rulli, Rossano Venturini, and Leonardo Venuta. "*Investigating the Scalability of Approximate Sparse Retrieval Algorithms to Massive Datasets*." Proc. ECIR. 2025.
@@ -210,4 +207,3 @@ The source code in this repository is subject to the following citation license:
 
 By downloading and using this software, you agree to cite the papers listed in the Bibliography section above in any kind of material you produce where it was used to conduct a search or experimentation, whether be it a research paper, dissertation, article, poster, presentation, or documentation. By using this software, you have agreed to the citation license.
 
-</details>
