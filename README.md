@@ -8,7 +8,7 @@
     <a href="https://dl.acm.org/doi/pdf/10.1145/3627673.3679977"><img src="https://badgen.net/static/paper/CIKM 2024/blue" /></a>
     <a href="https://arxiv.org/abs/2501.11628"><img src="https://badgen.net/static/paper/ECIR 2025/yellow" /></a>
     <a href="https://arxiv.org/abs/2602.05445"><img src="https://badgen.net/static/paper/ECIR 2026/pink" /></a>
-    <a href="https://arxiv.org/abs/2509.24815"><img src="https://badgen.net/static/paper/IEEE TPAMI/2404.18812/red" /></a>
+    <a href="https://arxiv.org/abs/2509.24815"><img src="https://badgen.net/static/paper/TPAMI/2404.18812/red" /></a>
 </p>
 
 <p align="center">
