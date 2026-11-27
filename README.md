@@ -7,6 +7,7 @@
     <a href="https://dl.acm.org/doi/pdf/10.1145/3626772.3657769"><img src="https://badgen.net/static/paper/SIGIR 2024/green" /></a>
     <a href="https://dl.acm.org/doi/pdf/10.1145/3627673.3679977"><img src="https://badgen.net/static/paper/CIKM 2024/blue" /></a>
     <a href="https://arxiv.org/abs/2501.11628"><img src="https://badgen.net/static/paper/ECIR 2025/yellow" /></a>
+    <a href="https://arxiv.org/abs/2602.05445"><img src="https://badgen.net/static/paper/ECIR 2026/pink" /></a>
     <a href="http://arxiv.org/abs/2404.18812"><img src="https://badgen.net/static/arXiv/2404.18812/red" /></a>
 </p>
 
