@@ -24,6 +24,7 @@ Seismic is a fast and lightweight search engine for learned sparse embeddings, w
 - **Python** >= 3.8
 - **Rust** toolchain (only needed if installing from source for hardware-specific optimizations)
 
+
 ## Installation
 
 The easiest way to use Seismic is via its Python API, which can be installed in two different ways:
@@ -101,8 +102,7 @@ Interactive Jupyter notebooks are available in the [`examples/`](examples/) fold
 - [**LargeVocabulary.ipynb**](examples/LargeVocabulary.ipynb) — Handling collections with large vocabularies (>65K tokens)
 
 
-
-## Comparison with the state-of-the-art
+## Comparison with the State of the Art
 Comparison with Dynamic Superblock Pruning ([DSP](https://arxiv.org/pdf/2504.17045)) using the `splade-v3` encoding of the MS MARCO dataset. 
 
 
@@ -121,6 +121,7 @@ Seismic is an approximate algorithm designed for high-performance retrieval over
 
 
 ## Resources
+
 Check out our `docs` folder for detailed guides:
 
 - **[PythonUsage.md](docs/PythonUsage.md)** - How to use the Seismic Python API.
@@ -202,7 +203,9 @@ IEEE TPAMI (To Appear)
 ```
 
 ## Citation License
+
 The source code in this repository is subject to the following citation license: **By downloading and using this software, you agree to cite the papers listed in the Bibliography section above in any kind of material you produce where it was used to conduct a search or experimentation, whether it be a research paper, dissertation, article, poster, presentation, or documentation. By using this software, you have agreed to the citation license**.
 
 ## License
+
 This software is released under the **MIT License** (see [LICENSE](LICENSE)).
