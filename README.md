@@ -13,7 +13,7 @@
 
 <p align="center">
     <a href="https://crates.io/crates/seismic"><img src="https://badgen.infra.medigy.com/crates/v/seismic" /></a>
-    <a href="https://crates.io/crates/seismic"><img src="https://badgen.infra.medigy.com/crates/d/seismic" /></a>
+    <!-- <a href="https://crates.io/crates/seismic"><img src="https://badgen.infra.medigy.com/crates/d/seismic" /></a> -->
     <a href="https://pepy.tech/projects/seismic"><img src="https://static.pepy.tech/badge/seismic" /></a>
     <a href="https://pepy.tech/projects/seismic"><img src="https://static.pepy.tech/badge/seismic/month" /></a>
     <a href="https://github.com/TusKANNy/seismic/stargazers"><img src="https://badgen.net/github/stars/TusKANNy/seismic" /></a>
